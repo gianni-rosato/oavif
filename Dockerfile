@@ -11,7 +11,7 @@ ARG LIBAOM_VERSION=v3.13.1
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential curl cmake git wget ca-certificates xz-utils \
-    pkg-config zlib1g-dev nasm \
+    pkg-config zlib1g-dev nasm libheif-dev\
  && rm -rf /var/lib/apt/lists/*
 
 # Zig 
