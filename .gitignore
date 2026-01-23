@@ -1,4 +1,6 @@
 .ruff_cache/
 .zig-cache/
+bin/
+build/
 zig-out/
 *.o
