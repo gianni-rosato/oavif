@@ -38,12 +38,12 @@ pub fn printVersion(version: []const u8) void {
     print("[simd: {}]\n", .{jpeg_simd});
     print("libwebp {d}.{d}.{d}\n", .{ webp_major, webp_minor, webp_patch });
     print("libavif {d}.{d}.{d} (", .{ avif_major, avif_minor, avif_patch });
-    print("libheif {d}.{d}.{d}\n", .{ heif_major, heif_minor, heif_patch });
 
     var ver_buf: [256]u8 = undefined;
     c.avifCodecVersions(&ver_buf);
     const ver_str = std.mem.span(@as([*:0]u8, @ptrCast(&ver_buf)));
     print("{s})\n", .{ver_str});
+    print("libheif {d}.{d}.{d}\n", .{ heif_major, heif_minor, heif_patch });
 }
 
 // Image data structure
@@ -494,6 +494,22 @@ pub fn loadHEIF(allocator: std.mem.Allocator, path: []const u8) !Image {
     defer c.heif_image_release(img);
 
     const channels: u8 = if (has_alpha) 4 else 3;
+
+    var icc_profile: ?[]u8 = null;
+    const profile_type = c.heif_image_handle_get_color_profile_type(handle);
+    if (profile_type == c.heif_color_profile_type_prof or profile_type == c.heif_color_profile_type_rICC) {
+        const icc_size = c.heif_image_handle_get_raw_color_profile_size(handle);
+        if (icc_size > 0) {
+            icc_profile = try allocator.alloc(u8, icc_size);
+            errdefer allocator.free(icc_profile.?);
+            const err_icc = c.heif_image_handle_get_raw_color_profile(handle, icc_profile.?.ptr);
+            if (err_icc.code != 0) {
+                allocator.free(icc_profile.?);
+                icc_profile = null;
+            }
+        }
+    }
+
     var stride: c_int = 0;
     const plane_data = c.heif_image_get_plane_readonly(img, c.heif_channel_interleaved, &stride);
 
@@ -502,7 +518,10 @@ pub fn loadHEIF(allocator: std.mem.Allocator, path: []const u8) !Image {
     const out_size = height * row_size;
 
     const out_buf = try allocator.alloc(u8, out_size);
-    errdefer allocator.free(out_buf);
+    errdefer {
+        allocator.free(out_buf);
+        if (icc_profile) |icc| allocator.free(icc);
+    }
 
     for (0..height) |y| {
         const src_offset = y * @as(usize, @intCast(stride));
@@ -516,7 +535,7 @@ pub fn loadHEIF(allocator: std.mem.Allocator, path: []const u8) !Image {
         .channels = channels,
         .hbd = is_16bit,
         .data = out_buf,
-        .icc = null,
+        .icc = icc_profile,
     };
 }
 
