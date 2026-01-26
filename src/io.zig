@@ -5,6 +5,7 @@ const c = @cImport({
     @cInclude("spng.h");
     @cInclude("jpeglib.h");
     @cInclude("webp/decode.h");
+    @cInclude("webp/mux.h");
     @cInclude("avif/avif.h");
     @cInclude("libheif/heif.h");
 });
@@ -54,12 +55,14 @@ pub const Image = struct {
     hbd: bool, // high bit depth (16-bit)
     data: []u8, // interleaved, row-major
     icc: ?[]u8 = null, // ICC color profile data
+    exif: ?[]u8 = null,
+    xmp: ?[]u8 = null,
 
     pub fn deinit(img: *Image, allocator: std.mem.Allocator) void {
         allocator.free(img.data);
-        if (img.icc) |icc|
-            allocator.free(icc);
-        img.* = undefined;
+        if (img.icc) |icc| allocator.free(icc);
+        if (img.exif) |exif| allocator.free(exif);
+        if (img.xmp) |xmp| allocator.free(xmp);
     }
 
     pub fn toRGB8(img: *Image, allocator: std.mem.Allocator) ![]u8 {
@@ -227,7 +230,8 @@ pub fn loadJPEG(allocator: std.mem.Allocator, path: []const u8) !Image {
     defer c.jpeg_destroy_decompress(&cinfo);
 
     c.jpeg_stdio_src(&cinfo, file_ptr);
-    c.jpeg_save_markers(&cinfo, c.JPEG_APP0 + 2, 0xFFFF);
+    c.jpeg_save_markers(&cinfo, c.JPEG_APP0 + 1, 0xFFFF); // APP1 for EXIF and XMP
+    c.jpeg_save_markers(&cinfo, c.JPEG_APP0 + 2, 0xFFFF); // APP2 for ICC
 
     if (c.jpeg_read_header(&cinfo, c.TRUE) != c.JPEG_HEADER_OK)
         return error.InvalidJPEGHeader;
@@ -241,6 +245,25 @@ pub fn loadJPEG(allocator: std.mem.Allocator, path: []const u8) !Image {
             @memcpy(icc_profile.?, icc_data_ptr[0..icc_data_len]);
             c.free(icc_data_ptr);
         };
+
+    var exif_data: ?[]u8 = null;
+    var xmp_data: ?[]u8 = null;
+    var marker = cinfo.marker_list;
+    while (marker != null) : (marker = marker.*.next) {
+        if (marker.*.marker == c.JPEG_APP0 + 1) {
+            const marker_data = marker.*.data[0..marker.*.data_length];
+            // EXIF: starts with "Exif\0\0"
+            if (marker_data.len > 6 and std.mem.eql(u8, marker_data[0..6], "Exif\x00\x00")) {
+                exif_data = try allocator.alloc(u8, marker.*.data_length - 6);
+                @memcpy(exif_data.?, marker_data[6..]);
+            }
+            // XMP: starts with "http://ns.adobe.com/xap/1.0/\0"
+            else if (marker_data.len > 29 and std.mem.startsWith(u8, marker_data, "http://ns.adobe.com/xap/1.0/\x00")) {
+                xmp_data = try allocator.alloc(u8, marker.*.data_length - 29);
+                @memcpy(xmp_data.?, marker_data[29..]);
+            }
+        }
+    }
 
     if (cinfo.num_components == 1)
         cinfo.out_color_space = c.JCS_GRAYSCALE
@@ -259,6 +282,8 @@ pub fn loadJPEG(allocator: std.mem.Allocator, path: []const u8) !Image {
     errdefer {
         allocator.free(out_buf);
         if (icc_profile) |icc| allocator.free(icc);
+        if (exif_data) |exif| allocator.free(exif);
+        if (xmp_data) |xmp| allocator.free(xmp);
     }
 
     const row_buf = try allocator.alloc(u8, row_stride);
@@ -268,6 +293,8 @@ pub fn loadJPEG(allocator: std.mem.Allocator, path: []const u8) !Image {
         var row_pointers: [1][*c]u8 = .{row_buf.ptr};
         if (c.jpeg_read_scanlines(&cinfo, &row_pointers, 1) != 1) {
             if (icc_profile) |icc| allocator.free(icc);
+            if (exif_data) |exif| allocator.free(exif);
+            if (xmp_data) |xmp| allocator.free(xmp);
             return error.JPEGReadScanlinesFailed;
         }
         @memcpy(out_buf[y * row_stride .. (y + 1) * row_stride], row_buf);
@@ -275,6 +302,8 @@ pub fn loadJPEG(allocator: std.mem.Allocator, path: []const u8) !Image {
 
     if (c.jpeg_finish_decompress(&cinfo) != c.TRUE) {
         if (icc_profile) |icc| allocator.free(icc);
+        if (exif_data) |exif| allocator.free(exif);
+        if (xmp_data) |xmp| allocator.free(xmp);
         return error.JPEGFinishDecompressFailed;
     }
 
@@ -285,6 +314,8 @@ pub fn loadJPEG(allocator: std.mem.Allocator, path: []const u8) !Image {
         .hbd = false,
         .data = out_buf,
         .icc = icc_profile,
+        .exif = exif_data,
+        .xmp = xmp_data,
     };
 }
 
@@ -333,13 +364,76 @@ pub fn loadPNG(allocator: std.mem.Allocator, path: []const u8) !Image {
     if (c.spng_decoded_image_size(ctx, fmt, &out_size) != 0) return error.ImageSizeFailed;
 
     const out_buf = try allocator.alloc(u8, out_size);
-    errdefer allocator.free(out_buf);
+    errdefer {
+        allocator.free(out_buf);
+        if (icc_profile) |icc| allocator.free(icc);
+    }
 
     if (c.spng_decode_image(ctx, out_buf.ptr, out_size, fmt, 0) != 0) {
         if (icc_profile) |icc| allocator.free(icc);
         return error.DecodeFailed;
     }
 
+    var exif_data: ?[]u8 = null;
+    var png_exif: c.struct_spng_exif = undefined;
+    const exif_result = c.spng_get_exif(ctx, &png_exif);
+    print("[PNG] spng_get_exif result: {}\n", .{exif_result});
+    if (exif_result == 0) {
+        print("[PNG] EXIF length: {}, data ptr: {}\n", .{ png_exif.length, @intFromPtr(png_exif.data) });
+        if (png_exif.length > 0 and png_exif.data != null) {
+            exif_data = try allocator.alloc(u8, png_exif.length);
+            errdefer allocator.free(exif_data.?);
+            @memcpy(exif_data.?, png_exif.data[0..png_exif.length]);
+            print("[PNG] Extracted EXIF: {} bytes\n", .{png_exif.length});
+        }
+    } else if (exif_result != 73) { // 73 = SPNG_ECHUNKAVAIL chunk not present
+        print("[PNG] EXIF extraction error: {}\n", .{exif_result});
+    }
+
+    var xmp_data: ?[]u8 = null;
+
+    var n_text: u32 = 0;
+    var text_result = c.spng_get_text(ctx, null, &n_text);
+    print("[PNG] spng_get_text (count) result: {}, n_text: {}\n", .{ text_result, n_text });
+
+    if (text_result == 0 and n_text > 0) {
+        print("[PNG] Found {} text chunks, searching for XMP...\n", .{n_text});
+
+        const text_chunks = try allocator.alloc(c.struct_spng_text, n_text);
+        defer allocator.free(text_chunks);
+
+        text_result = c.spng_get_text(ctx, text_chunks.ptr, &n_text);
+        print("[PNG] spng_get_text (retrieve) result: {}\n", .{text_result});
+
+        if (text_result == 0) {
+            for (text_chunks[0..n_text], 0..) |text_chunk, i| {
+                print("[PNG] Chunk {}: type={}, ", .{ i, text_chunk.type });
+
+                const keyword_len = std.mem.indexOfScalar(u8, &text_chunk.keyword, 0) orelse text_chunk.keyword.len;
+                const keyword = text_chunk.keyword[0..keyword_len];
+                print("keyword='{s}'\n", .{keyword});
+
+                if (text_chunk.type == c.SPNG_ITXT) {
+                    if (std.mem.eql(u8, keyword, "XML:com.adobe.xmp")) {
+                        const text_len = std.mem.len(text_chunk.text);
+                        print("[PNG] Found XMP in iTXt chunk! Length: {}\n", .{text_len});
+                        if (text_len > 0) {
+                            xmp_data = try allocator.alloc(u8, text_len);
+                            errdefer allocator.free(xmp_data.?);
+                            @memcpy(xmp_data.?, text_chunk.text[0..text_len]);
+                            print("[PNG] Extracted XMP: {} bytes\n", .{text_len});
+                        }
+                        break;
+                    }
+                }
+            }
+            if (xmp_data == null) {
+                print("[PNG] No XMP found in any iTXt chunk\n", .{});
+            }
+        }
+    } else if (text_result != 73) { // 73 = SPNG_ECHUNKAVAIL
+        print("[PNG] Text chunk extraction error: {}\n", .{text_result});
+    }
     const channels: u8 = if (is_16bit) 4 else switch (fmt) {
         c.SPNG_FMT_RGB8 => 3,
         else => 4,
@@ -352,6 +446,8 @@ pub fn loadPNG(allocator: std.mem.Allocator, path: []const u8) !Image {
         .hbd = is_16bit,
         .data = out_buf,
         .icc = icc_profile,
+        .exif = exif_data,
+        .xmp = xmp_data,
     };
 }
 
@@ -451,6 +547,8 @@ pub fn loadPAM(allocator: std.mem.Allocator, path: []const u8) !Image {
         .hbd = false,
         .data = out,
         .icc = null,
+        .exif = null, // pam does not support metadata
+        .xmp = null,
     };
 }
 
@@ -461,6 +559,44 @@ pub fn loadWebP(allocator: std.mem.Allocator, path: []const u8) !Image {
     const buf = try allocator.alloc(u8, size);
     defer allocator.free(buf);
     _ = try file.readAll(buf);
+
+    var webp_data = c.WebPData{
+        .bytes = buf.ptr,
+        .size = buf.len,
+    };
+
+    var icc_profile: ?[]u8 = null;
+    var exif_data: ?[]u8 = null;
+    var xmp_data: ?[]u8 = null;
+
+    const mux = c.WebPMuxCreate(&webp_data, 0);
+    if (mux != null) {
+        defer c.WebPMuxDelete(mux);
+
+        var icc_chunk: c.WebPData = undefined;
+        if (c.WebPMuxGetChunk(mux, "ICCP", &icc_chunk) == c.WEBP_MUX_OK) {
+            if (icc_chunk.size > 0 and icc_chunk.bytes != null) {
+                icc_profile = try allocator.alloc(u8, icc_chunk.size);
+                @memcpy(icc_profile.?, icc_chunk.bytes[0..icc_chunk.size]);
+            }
+        }
+
+        var exif_chunk: c.WebPData = undefined;
+        if (c.WebPMuxGetChunk(mux, "EXIF", &exif_chunk) == c.WEBP_MUX_OK) {
+            if (exif_chunk.size > 0 and exif_chunk.bytes != null) {
+                exif_data = try allocator.alloc(u8, exif_chunk.size);
+                @memcpy(exif_data.?, exif_chunk.bytes[0..exif_chunk.size]);
+            }
+        }
+
+        var xmp_chunk: c.WebPData = undefined;
+        if (c.WebPMuxGetChunk(mux, "XMP ", &xmp_chunk) == c.WEBP_MUX_OK) {
+            if (xmp_chunk.size > 0 and xmp_chunk.bytes != null) {
+                xmp_data = try allocator.alloc(u8, xmp_chunk.size);
+                @memcpy(xmp_data.?, xmp_chunk.bytes[0..xmp_chunk.size]);
+            }
+        }
+    }
 
     var features: c.WebPBitstreamFeatures = undefined;
     if (c.WebPGetFeatures(buf.ptr, buf.len, &features) != c.VP8_STATUS_OK)
@@ -480,7 +616,12 @@ pub fn loadWebP(allocator: std.mem.Allocator, path: []const u8) !Image {
 
     const out_size = @as(usize, @intCast(width)) * @as(usize, @intCast(height)) * channels;
     const out_buf = try allocator.alloc(u8, out_size);
-    errdefer allocator.free(out_buf);
+    errdefer {
+        allocator.free(out_buf);
+        if (icc_profile) |icc| allocator.free(icc);
+        if (exif_data) |exif| allocator.free(exif);
+        if (xmp_data) |xmp| allocator.free(xmp);
+    }
     @memcpy(out_buf, @as([*]const u8, @ptrCast(data))[0..out_size]);
 
     return .{
@@ -489,7 +630,9 @@ pub fn loadWebP(allocator: std.mem.Allocator, path: []const u8) !Image {
         .channels = channels,
         .hbd = false,
         .data = out_buf,
-        .icc = null,
+        .icc = icc_profile,
+        .exif = exif_data,
+        .xmp = xmp_data,
     };
 }
 
@@ -549,6 +692,47 @@ pub fn loadHEIF(allocator: std.mem.Allocator, path: []const u8) !Image {
         }
     }
 
+    var exif_data: ?[]u8 = null;
+    var xmp_data: ?[]u8 = null;
+    const num_metadata = c.heif_image_handle_get_number_of_metadata_blocks(handle, null);
+    if (num_metadata > 0) {
+        const meta_ids = try allocator.alloc(c.heif_item_id, @intCast(num_metadata));
+        defer allocator.free(meta_ids);
+        _ = c.heif_image_handle_get_list_of_metadata_block_IDs(handle, null, meta_ids.ptr, @intCast(num_metadata));
+
+        for (meta_ids) |meta_id| {
+            const meta_type_ptr = c.heif_image_handle_get_metadata_type(handle, meta_id);
+            if (meta_type_ptr != null) {
+                const meta_type = std.mem.span(meta_type_ptr);
+                if (std.mem.eql(u8, meta_type, "Exif")) {
+                    const exif_size = c.heif_image_handle_get_metadata_size(handle, meta_id);
+                    if (exif_size > 0) {
+                        exif_data = try allocator.alloc(u8, exif_size);
+                        const err_exif = c.heif_image_handle_get_metadata(handle, meta_id, exif_data.?.ptr);
+                        if (err_exif.code != 0) {
+                            allocator.free(exif_data.?);
+                            exif_data = null;
+                        } else {
+                            print("[HEIF] Extracted EXIF: {} bytes\n", .{exif_size});
+                        }
+                    }
+                } else if (std.mem.eql(u8, meta_type, "XMP")) {
+                    const xmp_size = c.heif_image_handle_get_metadata_size(handle, meta_id);
+                    if (xmp_size > 0) {
+                        xmp_data = try allocator.alloc(u8, xmp_size);
+                        const err_xmp = c.heif_image_handle_get_metadata(handle, meta_id, xmp_data.?.ptr);
+                        if (err_xmp.code != 0) {
+                            allocator.free(xmp_data.?);
+                            xmp_data = null;
+                        } else {
+                            print("[HEIF] Extracted XMP: {} bytes\n", .{xmp_size});
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     var stride: c_int = 0;
     const plane_data = c.heif_image_get_plane_readonly(img, c.heif_channel_interleaved, &stride);
 
@@ -560,6 +744,8 @@ pub fn loadHEIF(allocator: std.mem.Allocator, path: []const u8) !Image {
     errdefer {
         allocator.free(out_buf);
         if (icc_profile) |icc| allocator.free(icc);
+        if (exif_data) |exif| allocator.free(exif);
+        if (xmp_data) |xmp| allocator.free(xmp);
     }
 
     for (0..height) |y| {
@@ -575,6 +761,8 @@ pub fn loadHEIF(allocator: std.mem.Allocator, path: []const u8) !Image {
         .hbd = is_16bit,
         .data = out_buf,
         .icc = icc_profile,
+        .exif = exif_data,
+        .xmp = xmp_data,
     };
 }
 
@@ -653,6 +841,18 @@ pub fn loadAVIF(allocator: std.mem.Allocator, path: []const u8) !Image {
         @memcpy(icc_profile.?, img_ptr.*.icc.data[0..img_ptr.*.icc.size]);
     }
 
+    var exif_data: ?[]u8 = null;
+    if (img_ptr.*.exif.size > 0 and img_ptr.*.exif.data != null) {
+        exif_data = try allocator.alloc(u8, img_ptr.*.exif.size);
+        @memcpy(exif_data.?, img_ptr.*.exif.data[0..img_ptr.*.exif.size]);
+    }
+
+    var xmp_data: ?[]u8 = null;
+    if (img_ptr.*.xmp.size > 0 and img_ptr.*.xmp.data != null) {
+        xmp_data = try allocator.alloc(u8, img_ptr.*.xmp.size);
+        @memcpy(xmp_data.?, img_ptr.*.xmp.data[0..img_ptr.*.xmp.size]);
+    }
+
     const out_buf = try copyRgbPixels(allocator, result.rgb, width, height);
     errdefer allocator.free(out_buf);
 
@@ -672,6 +872,8 @@ pub fn loadAVIF(allocator: std.mem.Allocator, path: []const u8) !Image {
         .hbd = hbd,
         .data = out_buf,
         .icc = icc_profile,
+        .exif = exif_data,
+        .xmp = xmp_data,
     };
 }
 
@@ -691,6 +893,16 @@ pub fn encodeAvifToBuffer(e: *EncCtx, allocator: std.mem.Allocator, output: *std
         const result = c.avifImageSetProfileICC(image, icc.ptr, icc.len);
         if (result != c.AVIF_RESULT_OK)
             return error.SetICCProfileFailed;
+    }
+
+    if (e.src.exif) |exif| {
+        const result = c.avifImageSetMetadataExif(image, exif.ptr, exif.len);
+        if (result != c.AVIF_RESULT_OK)
+            return error.SetExifFailed;
+
+        // restore orientation instead of using the source's
+        image.*.transformFlags = c.AVIF_TRANSFORM_NONE;
+        image.*.imir.axis = 0;
     }
 
     var rgb_img = c.avifRGBImage{};
@@ -758,6 +970,12 @@ pub fn encodeAvifToBuffer(e: *EncCtx, allocator: std.mem.Allocator, output: *std
 
     avifenc.*.quality = @intCast(e.q);
     avifenc.*.qualityAlpha = @intCast(o.quality_alpha);
+
+    if (e.src.xmp) |xmp| {
+        const result = c.avifImageSetMetadataXMP(image, xmp.ptr, xmp.len);
+        if (result != c.AVIF_RESULT_OK)
+            return error.SetXmpFailed;
+    }
 
     var avif_output = c.avifRWData{ .data = null, .size = 0 };
     if (c.avifEncoderAddImage(avifenc, image, 1, c.AVIF_ADD_IMAGE_FLAG_SINGLE) != c.AVIF_RESULT_OK)

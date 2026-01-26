@@ -85,6 +85,10 @@ The `oavif` binary will be emitted to `zig-out/bin`. To install system-wide on m
 zig build --release=fast --prefix /usr/local
 ```
 
+>[!tip]
+> If your libavif library contains rav1e like in the `Dockerfile` you can use the `-Drav1e=true` option
+> for it to be properly linked 
+
 ### Docker
 
 A multi-stage Dockerfile is provided to build a fully static `oavif` binary in a controlled environment.
