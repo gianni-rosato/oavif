@@ -141,42 +141,26 @@ pub const Image = struct {
     }
 };
 
-fn detectImageFormat(data: []const u8) !enum { jpeg, png, pam, webp, avif, heif, unknown } {
+fn hasExtension(path: []const u8, ext: []const u8) bool {
+    if (path.len < ext.len) return false;
+    const suffix = path[path.len - ext.len ..];
+    return std.ascii.eqlIgnoreCase(suffix, ext);
+}
+
+fn detectImageFormat(data: []const u8, path: []const u8) !enum { jpeg, png, pam, webp, avif, heif, unknown } {
     if (data.len < 12) return error.InsufficientData;
 
-    // JPEG: FF D8 FF
-    if (data[0] == 0xFF and data[1] == 0xD8 and data[2] == 0xFF) {
+    if (std.mem.eql(u8, data[0..3], "\xFF\xD8\xFF"))
         return .jpeg;
-    }
-
-    // PNG: 89 50 4E 47 0D 0A 1A 0A
-    if (data[0] == 0x89 and data[1] == 0x50 and data[2] == 0x4E and data[3] == 0x47 and
-        data[4] == 0x0D and data[5] == 0x0A and data[6] == 0x1A and data[7] == 0x0A)
-    {
+    if (std.mem.eql(u8, data[0..8], "\x89PNG\r\n\x1A\n"))
         return .png;
-    }
-
-    // WebP: RIFF...WEBP
-    if (data[0] == 'R' and data[1] == 'I' and data[2] == 'F' and data[3] == 'F' and
-        data[8] == 'W' and data[9] == 'E' and data[10] == 'B' and data[11] == 'P')
-    {
+    if (std.mem.eql(u8, data[0..4], "RIFF") and std.mem.eql(u8, data[8..12], "WEBP"))
         return .webp;
-    }
-
-    // PAM: P7
-    if (data[0] == 'P' and data[1] == '7') {
+    if (std.mem.eql(u8, data[0..2], "P7"))
         return .pam;
-    }
-
-    // AVIF/HEIF: Check for ftyp at offset 4
-    if (data[4] == 'f' and data[5] == 't' and data[6] == 'y' and data[7] == 'p') {
-
-        // Check for AVIF brand: ftypavif
-        if (data[8] == 'a' and data[9] == 'v' and data[10] == 'i' and data[11] == 'f') {
+    if (std.mem.eql(u8, data[4..8], "ftyp")) {
+        if (std.mem.eql(u8, data[8..12], "avif"))
             return .avif;
-        }
-
-        // Check for HEIF brands: ftypheic, ftypmif1, ftypheif, ftyphis
         const brand = data[8..12];
         if (std.mem.eql(u8, brand, "heic") or
             std.mem.eql(u8, brand, "heix") or
@@ -188,22 +172,31 @@ fn detectImageFormat(data: []const u8) !enum { jpeg, png, pam, webp, avif, heif,
         }
     }
 
+    if (hasExtension(path, ".jpg") or hasExtension(path, ".jpeg"))
+        return .jpeg
+    else if (hasExtension(path, ".png"))
+        return .png
+    else if (hasExtension(path, ".pam"))
+        return .pam
+    else if (hasExtension(path, ".webp"))
+        return .webp
+    else if (hasExtension(path, ".avif"))
+        return .avif
+    else if (hasExtension(path, ".heif") or hasExtension(path, ".heic"))
+        return .heif;
+
     return .unknown;
 }
 
 pub fn loadImage(allocator: std.mem.Allocator, path: []const u8) !Image {
-    // Read first 12 bytes to detect format
     const file = try std.fs.cwd().openFile(path, .{});
     defer file.close();
 
     var header: [12]u8 = undefined;
     const bytes_read = try file.readAll(&header);
+    const format = try detectImageFormat(header[0..bytes_read], path);
 
-    const format = try detectImageFormat(header[0..bytes_read]);
-
-    // Reset file position
     try file.seekTo(0);
-    file.close();
 
     return switch (format) {
         .jpeg => loadJPEG(allocator, path),
@@ -211,6 +204,7 @@ pub fn loadImage(allocator: std.mem.Allocator, path: []const u8) !Image {
         .pam => loadPAM(allocator, path),
         .webp => loadWebP(allocator, path),
         .avif => loadAVIF(allocator, path),
+        .heif => loadHEIF(allocator, path),
         .unknown => error.UnsupportedImageFormat,
     };
 }
