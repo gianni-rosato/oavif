@@ -180,20 +180,6 @@ fn detectImageFormat(data: []const u8) !enum { jpeg, png, pam, webp, avif, heif,
         // Any other ftyp brand is likely a video format
         return .video;
     }
-
-    if (hasExtension(path, ".jpg") or hasExtension(path, ".jpeg"))
-        return .jpeg
-    else if (hasExtension(path, ".png"))
-        return .png
-    else if (hasExtension(path, ".pam"))
-        return .pam
-    else if (hasExtension(path, ".webp"))
-        return .webp
-    else if (hasExtension(path, ".avif"))
-        return .avif
-    else if (hasExtension(path, ".heif") or hasExtension(path, ".heic"))
-        return .heif;
-
     return .unknown;
 }
 
