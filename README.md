@@ -39,7 +39,7 @@ options:
  -q, --quality u8
     quantizer (0..100), bypasses search
 
-Input image formats: PNG, PAM, JPEG, WebP, or AVIF
+Input image formats: PNG, PAM, HEIC, HEIF, JPEG, WebP, or AVIF
 ```
 
 A script is included in the `scripts/` directory to test oavif's performance on a directory of images.
@@ -71,6 +71,7 @@ Compilation requires:
 - libwebp
 - libjpeg-turbo
 - libspng
+- libheif
 
 ```sh
 git clone https://github.com/gianni-rosato/oavif

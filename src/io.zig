@@ -6,6 +6,7 @@ const c = @cImport({
     @cInclude("jpeglib.h");
     @cInclude("webp/decode.h");
     @cInclude("avif/avif.h");
+    @cInclude("libheif/heif.h");
 });
 
 const EncCtx = @import("main.zig").EncCtx;
@@ -26,6 +27,12 @@ pub fn printVersion(version: []const u8) void {
     const avif_major: comptime_int = c.AVIF_VERSION_MAJOR;
     const avif_minor: comptime_int = c.AVIF_VERSION_MINOR;
     const avif_patch: comptime_int = c.AVIF_VERSION_PATCH;
+
+    const heif_version = c.heif_get_version_number();
+    const heif_major = heif_version >> 24;
+    const heif_minor = (heif_version >> 16) & 0xFF;
+    const heif_patch = (heif_version >> 8) & 0xFF;
+
     print("oavif {s}\n", .{version});
     print("libjpeg-turbo {d}.{d}.{d} ", .{ jpeg_major, jpeg_minor, jpeg_patch });
     print("[simd: {}]\n", .{jpeg_simd});
@@ -36,6 +43,7 @@ pub fn printVersion(version: []const u8) void {
     c.avifCodecVersions(&ver_buf);
     const ver_str = std.mem.span(@as([*:0]u8, @ptrCast(&ver_buf)));
     print("{s})\n", .{ver_str});
+    print("libheif {d}.{d}.{d}\n", .{ heif_major, heif_minor, heif_patch });
 }
 
 // Image data structure
@@ -144,6 +152,8 @@ pub fn loadImage(allocator: std.mem.Allocator, path: []const u8) !Image {
         return loadWebP(allocator, path);
     } else if (hasExtension(path, ".avif")) {
         return loadAVIF(allocator, path);
+    } else if (hasExtension(path, ".heic") or hasExtension(path, ".heif")) {
+        return loadHEIF(allocator, path);
     } else {
         return error.UnsupportedImageFormat;
     }
@@ -441,6 +451,91 @@ pub fn loadWebP(allocator: std.mem.Allocator, path: []const u8) !Image {
         .hbd = false,
         .data = out_buf,
         .icc = null,
+    };
+}
+
+pub fn loadHEIF(allocator: std.mem.Allocator, path: []const u8) !Image {
+    const file = try std.fs.cwd().openFile(path, .{});
+    defer file.close();
+
+    const size = try file.getEndPos();
+    const buf = try allocator.alloc(u8, size);
+    defer allocator.free(buf);
+    _ = try file.readAll(buf);
+
+    const ctx = c.heif_context_alloc();
+    if (ctx == null) return error.FailedCreateContext;
+    defer c.heif_context_free(ctx);
+
+    const err_read = c.heif_context_read_from_memory_without_copy(ctx, buf.ptr, buf.len, null);
+    if (err_read.code != 0) return error.HeifReadFailed;
+
+    var handle: ?*c.heif_image_handle = null;
+    const err_handle = c.heif_context_get_primary_image_handle(ctx, &handle);
+    if (err_handle.code != 0) return error.GetHandleFailed;
+    defer c.heif_image_handle_release(handle);
+
+    const width: usize = @intCast(c.heif_image_handle_get_width(handle));
+    const height: usize = @intCast(c.heif_image_handle_get_height(handle));
+    const has_alpha = c.heif_image_handle_has_alpha_channel(handle) != 0;
+
+    const bit_depth: c_int = c.heif_image_handle_get_luma_bits_per_pixel(handle);
+    const is_16bit = bit_depth > 8;
+
+    var img: ?*c.heif_image = null;
+    const chroma: c_uint = @intCast(if (is_16bit)
+        (if (has_alpha) c.heif_chroma_interleaved_RRGGBBAA_BE else c.heif_chroma_interleaved_RRGGBB_BE)
+    else
+        (if (has_alpha) c.heif_chroma_interleaved_RGBA else c.heif_chroma_interleaved_RGB));
+
+    const err_decode = c.heif_decode_image(handle, &img, c.heif_colorspace_RGB, chroma, null);
+    if (err_decode.code != 0) return error.DecodeFailed;
+
+    defer c.heif_image_release(img);
+
+    const channels: u8 = if (has_alpha) 4 else 3;
+
+    var icc_profile: ?[]u8 = null;
+    const profile_type = c.heif_image_handle_get_color_profile_type(handle);
+    if (profile_type == c.heif_color_profile_type_prof or profile_type == c.heif_color_profile_type_rICC) {
+        const icc_size = c.heif_image_handle_get_raw_color_profile_size(handle);
+        if (icc_size > 0) {
+            icc_profile = try allocator.alloc(u8, icc_size);
+            errdefer allocator.free(icc_profile.?);
+            const err_icc = c.heif_image_handle_get_raw_color_profile(handle, icc_profile.?.ptr);
+            if (err_icc.code != 0) {
+                allocator.free(icc_profile.?);
+                icc_profile = null;
+            }
+        }
+    }
+
+    var stride: c_int = 0;
+    const plane_data = c.heif_image_get_plane_readonly(img, c.heif_channel_interleaved, &stride);
+
+    const pixel_size: usize = if (is_16bit) 2 else 1;
+    const row_size = width * channels * pixel_size;
+    const out_size = height * row_size;
+
+    const out_buf = try allocator.alloc(u8, out_size);
+    errdefer {
+        allocator.free(out_buf);
+        if (icc_profile) |icc| allocator.free(icc);
+    }
+
+    for (0..height) |y| {
+        const src_offset = y * @as(usize, @intCast(stride));
+        const dst_offset = y * row_size;
+        @memcpy(out_buf[dst_offset..][0..row_size], plane_data[src_offset..][0..row_size]);
+    }
+
+    return .{
+        .width = width,
+        .height = height,
+        .channels = channels,
+        .hbd = is_16bit,
+        .data = out_buf,
+        .icc = icc_profile,
     };
 }
 

@@ -234,5 +234,5 @@ pub fn printUsage() void {
         d.transfer_characteristics,
         d.matrix_coefficients,
     });
-    print("\n\n\x1b[37mInput image formats: PNG, PAM, JPEG, WebP, or AVIF\x1b[0m\n", .{});
+    print("\n\n\x1b[37mInput image formats: PNG, PAM, JPEG, WebP, HEIC, HEIF, or AVIF\x1b[0m\n", .{});
 }
