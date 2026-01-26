@@ -141,33 +141,78 @@ pub const Image = struct {
     }
 };
 
-pub fn loadImage(allocator: std.mem.Allocator, path: []const u8) !Image {
-    if (hasExtension(path, ".jpg") or hasExtension(path, ".jpeg")) {
-        return loadJPEG(allocator, path);
-    } else if (hasExtension(path, ".png")) {
-        return loadPNG(allocator, path);
-    } else if (hasExtension(path, ".pam")) {
-        return loadPAM(allocator, path);
-    } else if (hasExtension(path, ".webp")) {
-        return loadWebP(allocator, path);
-    } else if (hasExtension(path, ".avif")) {
-        return loadAVIF(allocator, path);
-    } else if (hasExtension(path, ".heic") or hasExtension(path, ".heif")) {
-        return loadHEIF(allocator, path);
-    } else {
-        return error.UnsupportedImageFormat;
+fn detectImageFormat(data: []const u8) !enum { jpeg, png, pam, webp, avif, heif, unknown } {
+    if (data.len < 12) return error.InsufficientData;
+
+    // JPEG: FF D8 FF
+    if (data[0] == 0xFF and data[1] == 0xD8 and data[2] == 0xFF) {
+        return .jpeg;
     }
+
+    // PNG: 89 50 4E 47 0D 0A 1A 0A
+    if (data[0] == 0x89 and data[1] == 0x50 and data[2] == 0x4E and data[3] == 0x47 and
+        data[4] == 0x0D and data[5] == 0x0A and data[6] == 0x1A and data[7] == 0x0A)
+    {
+        return .png;
+    }
+
+    // WebP: RIFF...WEBP
+    if (data[0] == 'R' and data[1] == 'I' and data[2] == 'F' and data[3] == 'F' and
+        data[8] == 'W' and data[9] == 'E' and data[10] == 'B' and data[11] == 'P')
+    {
+        return .webp;
+    }
+
+    // PAM: P7
+    if (data[0] == 'P' and data[1] == '7') {
+        return .pam;
+    }
+
+    // AVIF/HEIF: Check for ftyp at offset 4
+    if (data[4] == 'f' and data[5] == 't' and data[6] == 'y' and data[7] == 'p') {
+
+        // Check for AVIF brand: ftypavif
+        if (data[8] == 'a' and data[9] == 'v' and data[10] == 'i' and data[11] == 'f') {
+            return .avif;
+        }
+
+        // Check for HEIF brands: ftypheic, ftypmif1, ftypheif, ftyphis
+        const brand = data[8..12];
+        if (std.mem.eql(u8, brand, "heic") or
+            std.mem.eql(u8, brand, "heix") or
+            std.mem.eql(u8, brand, "heif") or
+            std.mem.eql(u8, brand, "mif1") or
+            std.mem.eql(u8, brand, "msf1"))
+        {
+            return .heif;
+        }
+    }
+
+    return .unknown;
 }
 
-fn hasExtension(path: []const u8, ext: []const u8) bool {
-    if (std.mem.endsWith(u8, path, ext))
-        return true;
-    var upper_ext_buf: [10]u8 = undefined;
-    if (ext.len <= upper_ext_buf.len) {
-        const upper_ext = std.ascii.upperString(upper_ext_buf[0..ext.len], ext);
-        return std.mem.endsWith(u8, path, upper_ext);
-    }
-    return false;
+pub fn loadImage(allocator: std.mem.Allocator, path: []const u8) !Image {
+    // Read first 12 bytes to detect format
+    const file = try std.fs.cwd().openFile(path, .{});
+    defer file.close();
+
+    var header: [12]u8 = undefined;
+    const bytes_read = try file.readAll(&header);
+
+    const format = try detectImageFormat(header[0..bytes_read]);
+
+    // Reset file position
+    try file.seekTo(0);
+    file.close();
+
+    return switch (format) {
+        .jpeg => loadJPEG(allocator, path),
+        .png => loadPNG(allocator, path),
+        .pam => loadPAM(allocator, path),
+        .webp => loadWebP(allocator, path),
+        .avif => loadAVIF(allocator, path),
+        .unknown => error.UnsupportedImageFormat,
+    };
 }
 
 pub fn loadJPEG(allocator: std.mem.Allocator, path: []const u8) !Image {
