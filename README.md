@@ -39,7 +39,7 @@ options:
  -q, --quality u8
     quantizer (0..100), bypasses search
 
-Input image formats: PNG, PAM, JPEG, WebP, or AVIF
+Input image formats: PNG, PAM, HEIC, HEIF, JPEG, WebP, or AVIF
 ```
 
 A script is included in the `scripts/` directory to test oavif's performance on a directory of images.
@@ -63,12 +63,15 @@ options:
 
 ## Compilation
 
+### Native (Zig)
+
 Compilation requires:
 - Zig 0.15.1
 - libavif
 - libwebp
 - libjpeg-turbo
 - libspng
+- libheif
 
 ```sh
 git clone https://github.com/gianni-rosato/oavif
@@ -81,6 +84,40 @@ The `oavif` binary will be emitted to `zig-out/bin`. To install system-wide on m
 ```sh
 zig build --release=fast --prefix /usr/local
 ```
+
+### Docker
+
+A multi-stage Dockerfile is provided to build a fully static `oavif` binary in a controlled environment.
+
+Workflow:
+
+- build stage (Ubuntu):
+
+  - Pull zlib and nasm from ubuntu repository
+  - installs Zig and build tools
+  - builds libjpeg-turbo, libwebp, libspng, and libavif (with local libaom) as static libraries into an isolated prefix
+  - builds `oavif` with `zig build`, linking against that prefix
+- final stage (distroless):
+
+  - copies only the `oavif` binary into a minimal runtime image
+
+Build via `make`:
+
+* the Makefile builds the Docker image
+* extracts the resulting `oavif` binary from the image to the current directory
+
+Typical usage:
+
+```sh
+make
+bin/oavif --version
+```
+
+This requires only Docker on the host; Zig and all dependencies are handled inside the container.
+
+> [!TIP]
+> You can use the container in your containerized environment (e.g synology or Kubernetes) to automate
+> a compression workflow.
 
 ## License
 
