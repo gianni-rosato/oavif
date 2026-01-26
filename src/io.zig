@@ -181,16 +181,29 @@ fn detectImageFormat(data: []const u8) !enum { jpeg, png, pam, webp, avif, heif,
         return .video;
     }
 
+    if (hasExtension(path, ".jpg") or hasExtension(path, ".jpeg"))
+        return .jpeg
+    else if (hasExtension(path, ".png"))
+        return .png
+    else if (hasExtension(path, ".pam"))
+        return .pam
+    else if (hasExtension(path, ".webp"))
+        return .webp
+    else if (hasExtension(path, ".avif"))
+        return .avif
+    else if (hasExtension(path, ".heif") or hasExtension(path, ".heic"))
+        return .heif;
+
     return .unknown;
 }
 
 pub fn loadImage(allocator: std.mem.Allocator, path: []const u8) !Image {
-    // Read first 12 bytes to detect format
     const file = try std.fs.cwd().openFile(path, .{});
     defer file.close();
 
     var header: [12]u8 = undefined;
     const bytes_read = try file.readAll(&header);
+    const format = try detectImageFormat(header[0..bytes_read], path);
 
     const format = try detectImageFormat(header[0..bytes_read]);
 
