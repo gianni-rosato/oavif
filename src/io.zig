@@ -141,51 +141,44 @@ pub const Image = struct {
     }
 };
 
-fn detectImageFormat(data: []const u8) !enum { jpeg, png, pam, webp, avif, heif, unknown } {
+fn detectImageFormat(data: []const u8) !enum { jpeg, png, pam, webp, avif, heif, video, unknown } {
     if (data.len < 12) return error.InsufficientData;
-
-    // JPEG: FF D8 FF
-    if (data[0] == 0xFF and data[1] == 0xD8 and data[2] == 0xFF) {
-        return .jpeg;
-    }
-
-    // PNG: 89 50 4E 47 0D 0A 1A 0A
-    if (data[0] == 0x89 and data[1] == 0x50 and data[2] == 0x4E and data[3] == 0x47 and
-        data[4] == 0x0D and data[5] == 0x0A and data[6] == 0x1A and data[7] == 0x0A)
-    {
-        return .png;
-    }
-
-    // WebP: RIFF...WEBP
-    if (data[0] == 'R' and data[1] == 'I' and data[2] == 'F' and data[3] == 'F' and
-        data[8] == 'W' and data[9] == 'E' and data[10] == 'B' and data[11] == 'P')
-    {
-        return .webp;
-    }
-
-    // PAM: P7
-    if (data[0] == 'P' and data[1] == '7') {
-        return .pam;
-    }
-
-    // AVIF/HEIF: Check for ftyp at offset 4
-    if (data[4] == 'f' and data[5] == 't' and data[6] == 'y' and data[7] == 'p') {
-
-        // Check for AVIF brand: ftypavif
-        if (data[8] == 'a' and data[9] == 'v' and data[10] == 'i' and data[11] == 'f') {
-            return .avif;
+    // Helper: Check if data at offset matches signature
+    const matchesSig = struct {
+        fn at(buf: []const u8, offset: usize, sig: []const u8) bool {
+            if (offset + sig.len > buf.len) return false;
+            return std.mem.eql(u8, buf[offset .. offset + sig.len], sig);
         }
+    }.at;
 
-        // Check for HEIF brands: ftypheic, ftypmif1, ftypheif, ftyphis
+    // Video formats (checked first)
+    if (matchesSig(data, 0, &[_]u8{ 0x1A, 0x45, 0xDF, 0xA3 })) return error.VideoFile; // EBML (MKV/WebM)
+    if (matchesSig(data, 0, "RIFF") and matchesSig(data, 8, "AVI ")) return error.VideoFile; // AVI
+    if (matchesSig(data, 0, "FLV")) return error.VideoFile; // FLV
+    if (data[0] == 0x47 and data[188] == 0x47) return error.VideoFile; // MPEG-TS sync bytes
+
+    // Image formats
+    if (matchesSig(data, 0, &[_]u8{ 0xFF, 0xD8, 0xFF })) return .jpeg;
+    if (matchesSig(data, 0, &[_]u8{ 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A })) return .png;
+    if (matchesSig(data, 0, "RIFF") and matchesSig(data, 8, "WEBP")) return .webp;
+    if (matchesSig(data, 0, "P7")) return .pam;
+
+    // AVIF/HEIF/Video: Check for ftyp container at offset 4
+    if (matchesSig(data, 4, "ftyp")) {
         const brand = data[8..12];
-        if (std.mem.eql(u8, brand, "heic") or
-            std.mem.eql(u8, brand, "heix") or
-            std.mem.eql(u8, brand, "heif") or
-            std.mem.eql(u8, brand, "mif1") or
-            std.mem.eql(u8, brand, "msf1"))
-        {
-            return .heif;
+        // Check for known image brands
+        const image_brands = [_][]const u8{ "avif", "heic", "heix", "heif", "mif1", "msf1" };
+
+        for (image_brands) |img_brand| {
+            if (std.mem.eql(u8, brand, img_brand)) {
+                if (std.mem.eql(u8, brand, "avif")) {
+                    return .avif;
+                }
+                return .heif;
+            }
         }
+        // Any other ftyp brand is likely a video format
+        return .video;
     }
 
     return .unknown;
@@ -201,16 +194,14 @@ pub fn loadImage(allocator: std.mem.Allocator, path: []const u8) !Image {
 
     const format = try detectImageFormat(header[0..bytes_read]);
 
-    // Reset file position
-    try file.seekTo(0);
-    file.close();
-
     return switch (format) {
         .jpeg => loadJPEG(allocator, path),
         .png => loadPNG(allocator, path),
         .pam => loadPAM(allocator, path),
         .webp => loadWebP(allocator, path),
         .avif => loadAVIF(allocator, path),
+        .heif => loadHEIF(allocator, path),
+        .video => error.VideoFile,
         .unknown => error.UnsupportedImageFormat,
     };
 }
