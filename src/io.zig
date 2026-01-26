@@ -63,6 +63,7 @@ pub const Image = struct {
         if (img.icc) |icc| allocator.free(icc);
         if (img.exif) |exif| allocator.free(exif);
         if (img.xmp) |xmp| allocator.free(xmp);
+        img.* = undefined;
     }
 
     pub fn toRGB8(img: *Image, allocator: std.mem.Allocator) ![]u8 {

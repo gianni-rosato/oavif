@@ -30,9 +30,6 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    // Optional build option, support for rav1e av1 encoder, add with -Drav1e=true
-    const use_rav1e = b.option(bool, "rav1e", "Include rav1e support") orelse false;
-
     // oavif
     const bin = b.addExecutable(.{
         .name = "oavif",
@@ -42,7 +39,6 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .strip = strip,
             .link_libc = true,
-            .link_libcpp = true,
         }),
     });
     bin.root_module.addOptions("build_opts", options);
@@ -61,8 +57,5 @@ pub fn build(b: *std.Build) void {
     bin.root_module.linkSystemLibrary("spng", .{ .preferred_link_mode = .static });
     bin.root_module.linkSystemLibrary("heif", .{ .preferred_link_mode = .static });
 
-    if (use_rav1e) {
-        bin.root_module.linkSystemLibrary("rav1e", .{ .preferred_link_mode = .static });
-    }
     b.installArtifact(bin);
 }

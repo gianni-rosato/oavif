@@ -55,19 +55,6 @@ RUN wget -q https://code.videolan.org/videolan/dav1d/-/archive/${DAV1D_VERSION}/
  && meson setup dav1d-${DAV1D_VERSION}/build dav1d-${DAV1D_VERSION} --prefix=${INSTALL_PREFIX} --buildtype=release --default-library=static \
  && meson compile -C dav1d-${DAV1D_VERSION}/build && meson install -C dav1d-${DAV1D_VERSION}/build
 
-# rav1e
-RUN wget -q https://github.com/xiph/rav1e/releases/download/v${RAV1E_VERSION}/librav1e-${RAV1E_VERSION}-linux-generic.tar.gz -O rav1e.tgz \
- && mkdir librav1e && tar -xzf rav1e.tgz -C librav1e \
- && cp -r librav1e/include/* ${INSTALL_PREFIX}/include/ \
- && cp -P librav1e/lib/*.a ${INSTALL_PREFIX}/lib/ \
- && cp -P librav1e/lib/pkgconfig/* ${INSTALL_PREFIX}/lib/pkgconfig/
-
-# SVT-AV1
-RUN wget -q https://gitlab.com/AOMediaCodec/SVT-AV1/-/archive/${SVTAV1_VERSION}/SVT-AV1-${SVTAV1_VERSION}.tar.gz -O svtav1.tgz \
- && tar -xzf svtav1.tgz \
- && cmake -S SVT-AV1-${SVTAV1_VERSION} -B svtav1 -DCMAKE_INSTALL_PREFIX=${INSTALL_PREFIX} -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
- && cmake --build svtav1 -j$(nproc) && cmake --install svtav1
-
 # libavif
 RUN wget -q https://github.com/AOMediaCodec/libavif/archive/refs/tags/v${LIBAVIF_VERSION}.tar.gz -O libavif.tgz \
  && tar -xzf libavif.tgz \
@@ -77,8 +64,8 @@ RUN wget -q https://github.com/AOMediaCodec/libavif/archive/refs/tags/v${LIBAVIF
     -DBUILD_SHARED_LIBS=OFF \
     -DAVIF_CODEC_AOM=LOCAL -DAVIF_AOM_GIT_TAG=${LIBAOM_VERSION} \
     -DAVIF_CODEC_DAV1D=LOCAL \
-    -DAVIF_CODEC_RAV1E=SYSTEM \
-    -DAVIF_CODEC_SVT=LOCAL \
+    -DAVIF_CODEC_RAV1E=OFF \
+    -DAVIF_CODEC_SVT=OFF \
     -DAVIF_LIBYUV=LOCAL \
     -DAVIF_BUILD_APPS=ON \
  && cmake --build avif -j$(nproc) && cmake --install avif
@@ -86,7 +73,7 @@ RUN wget -q https://github.com/AOMediaCodec/libavif/archive/refs/tags/v${LIBAVIF
 # oavif
 ADD . /build/oavif
 WORKDIR /build/oavif
-RUN zig build --release=fast --search-prefix ${INSTALL_PREFIX} -Drav1e=true
+RUN zig build --release=fast --search-prefix ${INSTALL_PREFIX}
 
 # ---- final stage -------------------------------------------------
 FROM gcr.io/distroless/cc-debian12:nonroot
