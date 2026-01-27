@@ -52,6 +52,7 @@ pub fn build(b: *std.Build) void {
     // system decoder libs
     bin.root_module.linkSystemLibrary("jpeg", .{ .preferred_link_mode = .static });
     bin.root_module.linkSystemLibrary("webp", .{ .preferred_link_mode = .static });
+    bin.root_module.linkSystemLibrary("webpmux", .{ .preferred_link_mode = .static });
     bin.root_module.linkSystemLibrary("avif", .{ .preferred_link_mode = .static });
     bin.root_module.linkSystemLibrary("spng", .{ .preferred_link_mode = .static });
     bin.root_module.linkSystemLibrary("heif", .{ .preferred_link_mode = .static });
