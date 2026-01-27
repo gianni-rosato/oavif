@@ -378,62 +378,159 @@ pub fn loadPNG(allocator: std.mem.Allocator, path: []const u8) !Image {
     var exif_data: ?[]u8 = null;
     var png_exif: c.struct_spng_exif = undefined;
     const exif_result = c.spng_get_exif(ctx, &png_exif);
-    print("[PNG] spng_get_exif result: {}\n", .{exif_result});
     if (exif_result == 0) {
-        print("[PNG] EXIF length: {}, data ptr: {}\n", .{ png_exif.length, @intFromPtr(png_exif.data) });
         if (png_exif.length > 0 and png_exif.data != null) {
             exif_data = try allocator.alloc(u8, png_exif.length);
             errdefer allocator.free(exif_data.?);
             @memcpy(exif_data.?, png_exif.data[0..png_exif.length]);
-            print("[PNG] Extracted EXIF: {} bytes\n", .{png_exif.length});
         }
-    } else if (exif_result != 73) { // 73 = SPNG_ECHUNKAVAIL chunk not present
-        print("[PNG] EXIF extraction error: {}\n", .{exif_result});
     }
 
     var xmp_data: ?[]u8 = null;
 
     var n_text: u32 = 0;
     var text_result = c.spng_get_text(ctx, null, &n_text);
-    print("[PNG] spng_get_text (count) result: {}, n_text: {}\n", .{ text_result, n_text });
 
     if (text_result == 0 and n_text > 0) {
-        print("[PNG] Found {} text chunks, searching for XMP...\n", .{n_text});
-
         const text_chunks = try allocator.alloc(c.struct_spng_text, n_text);
         defer allocator.free(text_chunks);
 
         text_result = c.spng_get_text(ctx, text_chunks.ptr, &n_text);
-        print("[PNG] spng_get_text (retrieve) result: {}\n", .{text_result});
 
         if (text_result == 0) {
-            for (text_chunks[0..n_text], 0..) |text_chunk, i| {
-                print("[PNG] Chunk {}: type={}, ", .{ i, text_chunk.type });
-
+            for (text_chunks[0..n_text]) |text_chunk| {
                 const keyword_len = std.mem.indexOfScalar(u8, &text_chunk.keyword, 0) orelse text_chunk.keyword.len;
                 const keyword = text_chunk.keyword[0..keyword_len];
-                print("keyword='{s}'\n", .{keyword});
 
-                if (text_chunk.type == c.SPNG_ITXT) {
+                if (text_chunk.type == c.SPNG_ITXT or text_chunk.type == c.SPNG_TEXT or text_chunk.type == c.SPNG_ZTXT) {
                     if (std.mem.eql(u8, keyword, "XML:com.adobe.xmp")) {
                         const text_len = std.mem.len(text_chunk.text);
-                        print("[PNG] Found XMP in iTXt chunk! Length: {}\n", .{text_len});
                         if (text_len > 0) {
                             xmp_data = try allocator.alloc(u8, text_len);
                             errdefer allocator.free(xmp_data.?);
                             @memcpy(xmp_data.?, text_chunk.text[0..text_len]);
-                            print("[PNG] Extracted XMP: {} bytes\n", .{text_len});
                         }
                         break;
+                    } else if (std.mem.eql(u8, keyword, "Raw profile type xmp")) {
+                        const raw = @as([*]const u8, @ptrCast(text_chunk.text))[0..@as(usize, @intCast(text_chunk.length))];
+
+                        var verbatim_start: ?usize = null;
+                        var verbatim_end: ?usize = null;
+
+                        if (std.mem.indexOf(u8, raw, "<x:xmpmeta")) |start_idx| {
+                            verbatim_start = start_idx;
+                            if (std.mem.indexOfPos(u8, raw, start_idx, "</x:xmpmeta>")) |end_tag_idx|
+                                verbatim_end = end_tag_idx + "</x:xmpmeta>".len
+                            else
+                                verbatim_end = raw.len;
+                        } else if (std.mem.indexOf(u8, raw, "<rdf:RDF")) |start_idx| {
+                            verbatim_start = start_idx;
+                            if (std.mem.indexOfPos(u8, raw, start_idx, "</rdf:RDF>")) |end_tag_idx|
+                                verbatim_end = end_tag_idx + "</rdf:RDF>".len
+                            else
+                                verbatim_end = raw.len;
+                        } else if (std.mem.indexOf(u8, raw, "<?xpacket")) |start_idx| {
+                            verbatim_start = start_idx;
+                            if (std.mem.lastIndexOf(u8, raw, "<?xpacket")) |last_tag_start| {
+                                if (std.mem.indexOfPos(u8, raw, last_tag_start, "?>")) |end_tag_idx|
+                                    verbatim_end = end_tag_idx + 2;
+                            }
+                            if (verbatim_end == null) verbatim_end = raw.len;
+                        }
+
+                        if (verbatim_start != null and verbatim_end != null) {
+                            const xml = raw[verbatim_start.?..verbatim_end.?];
+                            if (xml.len > 0) {
+                                xmp_data = try allocator.alloc(u8, xml.len);
+                                errdefer allocator.free(xmp_data.?);
+                                @memcpy(xmp_data.?, xml);
+                            }
+                            break;
+                        }
+
+                        const is_hex = struct {
+                            fn f(ch: u8) bool {
+                                return (ch >= '0' and ch <= '9') or (ch >= 'a' and ch <= 'f') or (ch >= 'A' and ch <= 'F');
+                            }
+                            fn val(ch: u8) u8 {
+                                return if (ch >= '0' and ch <= '9') ch - '0' else if (ch >= 'a' and ch <= 'f') ch - 'a' + 10 else ch - 'A' + 10;
+                            }
+                        }.f;
+                        const hex_val = struct {
+                            fn v(ch: u8) u8 {
+                                return if (ch >= '0' and ch <= '9') ch - '0' else if (ch >= 'a' and ch <= 'f') ch - 'a' + 10 else ch - 'A' + 10;
+                            }
+                        }.v;
+
+                        var i_scan: usize = 0;
+                        var newlines: u8 = 0;
+                        while (i_scan < raw.len and newlines < 3) : (i_scan += 1) {
+                            if (raw[i_scan] == '\n') newlines += 1;
+                        }
+
+                        if (newlines < 3) i_scan = 0;
+
+                        while (i_scan < raw.len and !is_hex(raw[i_scan])) : (i_scan += 1) {}
+                        if (i_scan >= raw.len) continue;
+
+                        var decoded = std.ArrayList(u8).initCapacity(allocator, 0) catch return error.OutOfMemory;
+                        defer decoded.deinit(allocator);
+
+                        var hi: ?u8 = null;
+                        while (i_scan < raw.len) : (i_scan += 1) {
+                            const ch = raw[i_scan];
+                            if (!is_hex(ch)) continue;
+                            if (hi == null)
+                                hi = hex_val(ch)
+                            else {
+                                const b: u8 = (hi.? << 4) | hex_val(ch);
+                                try decoded.append(allocator, b);
+                                hi = null;
+                            }
+                        }
+
+                        if (decoded.items.len == 0)
+                            continue;
+
+                        const decoded_bytes = decoded.items;
+
+                        var xml_start_opt: ?usize = null;
+                        var xml_end_opt: ?usize = null;
+
+                        if (std.mem.indexOf(u8, decoded_bytes, "<x:xmpmeta")) |xml_start| {
+                            xml_start_opt = xml_start;
+                            if (std.mem.indexOfPos(u8, decoded_bytes, xml_start, "</x:xmpmeta>")) |end_tag_idx|
+                                xml_end_opt = end_tag_idx + "</x:xmpmeta>".len
+                            else
+                                xml_end_opt = decoded_bytes.len;
+                        } else if (std.mem.indexOf(u8, decoded_bytes, "<rdf:RDF")) |rdf_start| {
+                            xml_start_opt = rdf_start;
+                            if (std.mem.indexOfPos(u8, decoded_bytes, rdf_start, "</rdf:RDF>")) |end_tag_idx|
+                                xml_end_opt = end_tag_idx + "</rdf:RDF>".len
+                            else
+                                xml_end_opt = decoded_bytes.len;
+                        } else if (std.mem.indexOf(u8, decoded_bytes, "<?xpacket")) |start_idx| {
+                            xml_start_opt = start_idx;
+                            if (std.mem.lastIndexOf(u8, decoded_bytes, "<?xpacket")) |last_tag_start| {
+                                if (std.mem.indexOfPos(u8, decoded_bytes, last_tag_start, "?>")) |end_tag_idx|
+                                    xml_end_opt = end_tag_idx + 2;
+                            }
+                            if (xml_end_opt == null) xml_end_opt = decoded_bytes.len;
+                        }
+
+                        if (xml_start_opt != null and xml_end_opt != null and xml_end_opt.? > xml_start_opt.?) {
+                            const xml = decoded_bytes[xml_start_opt.?..xml_end_opt.?];
+                            if (xml.len > 0) {
+                                xmp_data = try allocator.alloc(u8, xml.len);
+                                errdefer allocator.free(xmp_data.?);
+                                @memcpy(xmp_data.?, xml);
+                            }
+                            break;
+                        }
                     }
                 }
             }
-            if (xmp_data == null) {
-                print("[PNG] No XMP found in any iTXt chunk\n", .{});
-            }
         }
-    } else if (text_result != 73) { // 73 = SPNG_ECHUNKAVAIL
-        print("[PNG] Text chunk extraction error: {}\n", .{text_result});
     }
     const channels: u8 = if (is_16bit) 4 else switch (fmt) {
         c.SPNG_FMT_RGB8 => 3,
@@ -713,8 +810,6 @@ pub fn loadHEIF(allocator: std.mem.Allocator, path: []const u8) !Image {
                         if (err_exif.code != 0) {
                             allocator.free(exif_data.?);
                             exif_data = null;
-                        } else {
-                            print("[HEIF] Extracted EXIF: {} bytes\n", .{exif_size});
                         }
                     }
                 } else if (std.mem.eql(u8, meta_type, "XMP")) {
@@ -725,8 +820,22 @@ pub fn loadHEIF(allocator: std.mem.Allocator, path: []const u8) !Image {
                         if (err_xmp.code != 0) {
                             allocator.free(xmp_data.?);
                             xmp_data = null;
-                        } else {
-                            print("[HEIF] Extracted XMP: {} bytes\n", .{xmp_size});
+                        }
+                    }
+                } else if (std.mem.eql(u8, meta_type, "mime")) {
+                    const content_type_ptr = c.heif_image_handle_get_metadata_content_type(handle, meta_id);
+                    if (content_type_ptr != null) {
+                        const content_type = std.mem.span(content_type_ptr);
+                        if (std.mem.eql(u8, content_type, "application/rdf+xml")) {
+                            const xmp_size = c.heif_image_handle_get_metadata_size(handle, meta_id);
+                            if (xmp_size > 0) {
+                                xmp_data = try allocator.alloc(u8, xmp_size);
+                                const err_xmp = c.heif_image_handle_get_metadata(handle, meta_id, xmp_data.?.ptr);
+                                if (err_xmp.code != 0) {
+                                    allocator.free(xmp_data.?);
+                                    xmp_data = null;
+                                }
+                            }
                         }
                     }
                 }
