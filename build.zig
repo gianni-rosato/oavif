@@ -56,6 +56,7 @@ pub fn build(b: *std.Build) void {
     bin.root_module.linkSystemLibrary("avif", .{ .preferred_link_mode = .static });
     bin.root_module.linkSystemLibrary("spng", .{ .preferred_link_mode = .static });
     bin.root_module.linkSystemLibrary("heif", .{ .preferred_link_mode = .static });
+    bin.root_module.linkSystemLibrary("aom", .{ .preferred_link_mode = .static });
 
     b.installArtifact(bin);
 }

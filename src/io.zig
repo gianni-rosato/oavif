@@ -1017,55 +1017,120 @@ pub fn encodeAvifToBuffer(e: *EncCtx, allocator: std.mem.Allocator, output: *std
 
     var rgb_img = c.avifRGBImage{};
     c.avifRGBImageSetDefaults(&rgb_img, image);
-    rgb_img.format = if (e.src.channels == 4) c.AVIF_RGB_FORMAT_RGBA else c.AVIF_RGB_FORMAT_RGB;
+    const has_alpha = e.src.channels == 2 or e.src.channels == 4;
+    rgb_img.format = if (has_alpha) c.AVIF_RGB_FORMAT_RGBA else c.AVIF_RGB_FORMAT_RGB;
+    const output_channels: u8 = if (has_alpha) 4 else 3;
+
+    var gray_to_rgb: ?[]u8 = null;
+    var gray_to_rgb_16: ?[]u16 = null;
+    defer if (gray_to_rgb) |g| allocator.free(g);
+    defer if (gray_to_rgb_16) |g| allocator.free(g);
+
+    const work_data: []u8 = if (e.src.channels == 1 or e.src.channels == 2) blk: {
+        const pixels = e.w * e.h;
+        if (e.src.hbd) {
+            // 16-bit grayscale to RGB
+            gray_to_rgb_16 = try allocator.alloc(u16, pixels * output_channels);
+            const src_u16 = @as([*]const u16, @ptrCast(@alignCast(e.src.data.ptr)));
+            const dst_u16 = gray_to_rgb_16.?;
+
+            if (e.src.channels == 1) {
+                // Gray -> RGB
+                for (0..pixels) |i| {
+                    const gray = src_u16[i];
+                    dst_u16[i * 3 + 0] = gray;
+                    dst_u16[i * 3 + 1] = gray;
+                    dst_u16[i * 3 + 2] = gray;
+                }
+            } else {
+                // GrayAlpha -> RGBA
+                for (0..pixels) |i| {
+                    const gray = src_u16[i * 2 + 0];
+                    const alpha = src_u16[i * 2 + 1];
+                    dst_u16[i * 4 + 0] = gray;
+                    dst_u16[i * 4 + 1] = gray;
+                    dst_u16[i * 4 + 2] = gray;
+                    dst_u16[i * 4 + 3] = alpha;
+                }
+            }
+            break :blk @as([*]u8, @ptrCast(dst_u16.ptr))[0 .. pixels * output_channels * 2];
+        } else {
+            // 8-bit grayscale to RGB
+            gray_to_rgb = try allocator.alloc(u8, pixels * output_channels);
+            const dst = gray_to_rgb.?;
+
+            if (e.src.channels == 1) {
+                // Gray -> RGB
+                for (0..pixels) |i| {
+                    const gray = e.src.data[i];
+                    dst[i * 3 + 0] = gray;
+                    dst[i * 3 + 1] = gray;
+                    dst[i * 3 + 2] = gray;
+                }
+            } else {
+                // GrayAlpha -> RGBA
+                for (0..pixels) |i| {
+                    const gray = e.src.data[i * 2 + 0];
+                    const alpha = e.src.data[i * 2 + 1];
+                    dst[i * 4 + 0] = gray;
+                    dst[i * 4 + 1] = gray;
+                    dst[i * 4 + 2] = gray;
+                    dst[i * 4 + 3] = alpha;
+                }
+            }
+            break :blk dst;
+        }
+    } else e.src.data;
+
+    const work_channels = output_channels;
 
     if (!e.src.hbd and output_depth == 10) {
         const pixels = e.w * e.h;
-        const scaled_data = try allocator.alloc(u16, pixels * e.src.channels);
+        const scaled_data = try allocator.alloc(u16, pixels * work_channels);
         defer allocator.free(scaled_data);
 
-        for (0..pixels * e.src.channels) |i|
-            scaled_data[i] = @intCast((@as(usize, e.src.data[i]) * 1023 + 127) / 255);
+        for (0..pixels * work_channels) |i|
+            scaled_data[i] = @intCast((@as(usize, work_data[i]) * 1023 + 127) / 255);
 
         rgb_img.pixels = @ptrCast(scaled_data.ptr);
-        rgb_img.rowBytes = e.w * e.src.channels * 2;
+        rgb_img.rowBytes = e.w * work_channels * 2;
         rgb_img.depth = 10;
 
         if (c.avifImageRGBToYUV(image, &rgb_img) != c.AVIF_RESULT_OK)
             return error.ConvertFailed;
     } else if (e.src.hbd and output_depth == 10) {
         const pixels = e.w * e.h;
-        const scaled_data = try allocator.alloc(u16, pixels * e.src.channels);
+        const scaled_data = try allocator.alloc(u16, pixels * work_channels);
         defer allocator.free(scaled_data);
 
-        const src_u16 = @as([*]const u16, @ptrCast(@alignCast(e.src.data.ptr)))[0 .. pixels * e.src.channels];
-        for (0..pixels * e.src.channels) |i|
+        const src_u16 = @as([*]const u16, @ptrCast(@alignCast(work_data.ptr)))[0 .. pixels * work_channels];
+        for (0..pixels * work_channels) |i|
             scaled_data[i] = src_u16[i] >> 6;
 
         rgb_img.pixels = @ptrCast(scaled_data.ptr);
-        rgb_img.rowBytes = e.w * e.src.channels * 2;
+        rgb_img.rowBytes = e.w * work_channels * 2;
         rgb_img.depth = 10;
 
         if (c.avifImageRGBToYUV(image, &rgb_img) != c.AVIF_RESULT_OK)
             return error.ConvertFailed;
     } else if (e.src.hbd and output_depth == 8) {
         const pixels = e.w * e.h;
-        const scaled_data = try allocator.alloc(u8, pixels * e.src.channels);
+        const scaled_data = try allocator.alloc(u8, pixels * work_channels);
         defer allocator.free(scaled_data);
 
-        const src_u16 = @as([*]const u16, @ptrCast(@alignCast(e.src.data.ptr)))[0 .. pixels * e.src.channels];
-        for (0..pixels * e.src.channels) |i|
+        const src_u16 = @as([*]const u16, @ptrCast(@alignCast(work_data.ptr)))[0 .. pixels * work_channels];
+        for (0..pixels * work_channels) |i|
             scaled_data[i] = @intCast(src_u16[i] >> 8);
 
         rgb_img.pixels = @ptrCast(scaled_data.ptr);
-        rgb_img.rowBytes = e.w * e.src.channels;
+        rgb_img.rowBytes = e.w * work_channels;
         rgb_img.depth = 8;
 
         if (c.avifImageRGBToYUV(image, &rgb_img) != c.AVIF_RESULT_OK)
             return error.ConvertFailed;
     } else { // !hbd, output depth = 8
-        rgb_img.pixels = @ptrCast(@constCast(e.src.data.ptr));
-        rgb_img.rowBytes = e.w * e.src.channels;
+        rgb_img.pixels = @ptrCast(@constCast(work_data.ptr));
+        rgb_img.rowBytes = e.w * work_channels;
         rgb_img.depth = 8;
 
         if (c.avifImageRGBToYUV(image, &rgb_img) != c.AVIF_RESULT_OK)
