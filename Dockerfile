@@ -55,6 +55,24 @@ RUN wget -q https://code.videolan.org/videolan/dav1d/-/archive/${DAV1D_VERSION}/
  && meson setup dav1d-${DAV1D_VERSION}/build dav1d-${DAV1D_VERSION} --prefix=${INSTALL_PREFIX} --buildtype=release --default-library=static \
  && meson compile -C dav1d-${DAV1D_VERSION}/build && meson install -C dav1d-${DAV1D_VERSION}/build
 
+ # libaom
+ RUN wget -q https://aomedia.googlesource.com/aom/+archive/${LIBAOM_VERSION}.tar.gz -O libaom.tgz \
+ && mkdir -p libaom-src libaom-build \
+ && tar -xzf libaom.tgz -C libaom-src \
+ && cmake -S libaom-src -B libaom-build \
+    -DCMAKE_INSTALL_PREFIX=${INSTALL_PREFIX} \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DBUILD_SHARED_LIBS=OFF \
+    -DENABLE_TESTS=OFF \
+    -DENABLE_EXAMPLES=OFF \
+    -DENABLE_DOCS=OFF \
+    -DENABLE_TOOLS=OFF \
+    -DCONFIG_AV1_ENCODER=1 \
+    -DCONFIG_AV1_DECODER=1 \
+    -DCONFIG_TUNE_VMAF=0 \
+ && cmake --build libaom-build -j$(nproc) \
+ && cmake --install libaom-build
+ 
 # libavif
 RUN wget -q https://github.com/AOMediaCodec/libavif/archive/refs/tags/v${LIBAVIF_VERSION}.tar.gz -O libavif.tgz \
  && tar -xzf libavif.tgz \
@@ -62,7 +80,7 @@ RUN wget -q https://github.com/AOMediaCodec/libavif/archive/refs/tags/v${LIBAVIF
     -DCMAKE_INSTALL_PREFIX=${INSTALL_PREFIX} \
     -DCMAKE_BUILD_TYPE=Release \
     -DBUILD_SHARED_LIBS=OFF \
-    -DAVIF_CODEC_AOM=LOCAL -DAVIF_AOM_GIT_TAG=${LIBAOM_VERSION} \
+    -DAVIF_CODEC_AOM=SYSTEM \
     -DAVIF_CODEC_DAV1D=LOCAL \
     -DAVIF_CODEC_RAV1E=OFF \
     -DAVIF_CODEC_SVT=OFF \
