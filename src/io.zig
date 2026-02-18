@@ -1029,13 +1029,11 @@ pub fn encodeAvifToBuffer(e: *EncCtx, allocator: std.mem.Allocator, output: *std
     const work_data: []u8 = if (e.src.channels == 1 or e.src.channels == 2) blk: {
         const pixels = e.w * e.h;
         if (e.src.hbd) {
-            // 16-bit grayscale to RGB
             gray_to_rgb_16 = try allocator.alloc(u16, pixels * output_channels);
             const src_u16 = @as([*]const u16, @ptrCast(@alignCast(e.src.data.ptr)));
             const dst_u16 = gray_to_rgb_16.?;
 
             if (e.src.channels == 1) {
-                // Gray -> RGB
                 for (0..pixels) |i| {
                     const gray = src_u16[i];
                     dst_u16[i * 3 + 0] = gray;
@@ -1043,7 +1041,6 @@ pub fn encodeAvifToBuffer(e: *EncCtx, allocator: std.mem.Allocator, output: *std
                     dst_u16[i * 3 + 2] = gray;
                 }
             } else {
-                // GrayAlpha -> RGBA
                 for (0..pixels) |i| {
                     const gray = src_u16[i * 2 + 0];
                     const alpha = src_u16[i * 2 + 1];
@@ -1055,12 +1052,10 @@ pub fn encodeAvifToBuffer(e: *EncCtx, allocator: std.mem.Allocator, output: *std
             }
             break :blk @as([*]u8, @ptrCast(dst_u16.ptr))[0 .. pixels * output_channels * 2];
         } else {
-            // 8-bit grayscale to RGB
             gray_to_rgb = try allocator.alloc(u8, pixels * output_channels);
             const dst = gray_to_rgb.?;
 
             if (e.src.channels == 1) {
-                // Gray -> RGB
                 for (0..pixels) |i| {
                     const gray = e.src.data[i];
                     dst[i * 3 + 0] = gray;
@@ -1068,7 +1063,6 @@ pub fn encodeAvifToBuffer(e: *EncCtx, allocator: std.mem.Allocator, output: *std
                     dst[i * 3 + 2] = gray;
                 }
             } else {
-                // GrayAlpha -> RGBA
                 for (0..pixels) |i| {
                     const gray = e.src.data[i * 2 + 0];
                     const alpha = e.src.data[i * 2 + 1];
