@@ -3,16 +3,12 @@ const std = @import("std");
 fn getVersionString(b: *std.Build) ![]const u8 {
     const allocator = b.allocator;
     const command = [_][]const u8{ "git", "describe", "--tags", "--always" };
-    const result = std.process.Child.run(.{
-        .allocator = allocator,
-        .argv = &command,
-    }) catch |err| {
+    var code: u8 = undefined;
+    const stdout = b.runAllowFail(&command, &code, .inherit) catch |err| {
         std.log.warn("Failed to get git version: {s}", .{@errorName(err)});
         return "unknown";
     };
-    if (result.term.Exited != 0)
-        return "unknown";
-    const version = std.mem.trimRight(u8, result.stdout, "\r\n");
+    const version = std.mem.trimEnd(u8, stdout, "\r\n");
     return allocator.dupe(u8, version);
 }
 
@@ -22,7 +18,8 @@ pub fn build(b: *std.Build) void {
     const options = b.addOptions();
     const version = getVersionString(b) catch "unknown";
     options.addOption([]const u8, "version", version);
-    const strip: bool = if (optimize == std.builtin.OptimizeMode.ReleaseFast) true else false;
+    const strip: bool =
+        if (optimize == std.builtin.OptimizeMode.ReleaseFast) true else false;
 
     // fssimu2
     const fssimu2 = b.dependency("fssimu2", .{
@@ -30,9 +27,23 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // simpleimgio
+    const simpleimgio = b.dependency("simpleimgio", .{
+        .target = target,
+        .optimize = optimize,
+    });
+
+    // libspng
+    const spng = b.dependency("spng", .{
+        .target = target,
+        .optimize = optimize,
+        .linkage = .static,
+    });
+
     // oavif
     const bin = b.addExecutable(.{
         .name = "oavif",
+        .use_llvm = true,
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,
@@ -48,14 +59,10 @@ pub fn build(b: *std.Build) void {
 
     // local import
     bin.root_module.addImport("fssimu2", fssimu2.module("fssimu2"));
+    bin.root_module.addImport("simpleimgio", simpleimgio.module("simpleimgio"));
 
-    // system decoder libs
-    bin.root_module.linkSystemLibrary("jpeg", .{ .preferred_link_mode = .static });
-    bin.root_module.linkSystemLibrary("webp", .{ .preferred_link_mode = .static });
-    bin.root_module.linkSystemLibrary("webpmux", .{ .preferred_link_mode = .static });
+    bin.root_module.linkLibrary(spng.artifact("spng"));
     bin.root_module.linkSystemLibrary("avif", .{ .preferred_link_mode = .static });
-    bin.root_module.linkSystemLibrary("spng", .{ .preferred_link_mode = .static });
-    bin.root_module.linkSystemLibrary("heif", .{ .preferred_link_mode = .static });
     bin.root_module.linkSystemLibrary("aom", .{ .preferred_link_mode = .static });
 
     b.installArtifact(bin);

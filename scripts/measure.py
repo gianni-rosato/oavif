@@ -134,7 +134,7 @@ def main() -> None:
     temp_output_dir = Path("temp_avif_output")
     temp_output_dir.mkdir(exist_ok=True)
 
-    image_extensions: set[str] = {".png", ".jpg", ".jpeg"}
+    image_extensions: set[str] = {".png"}
     image_files: list[Path] = sorted(
         f for f in images_dir.iterdir() if f.is_file() and f.suffix.lower() in image_extensions
     )

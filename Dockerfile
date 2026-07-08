@@ -1,9 +1,7 @@
 # ---- build stage -------------------------------------------------
 FROM ubuntu:24.04 AS build
-ARG ZIG_VERSION=0.15.2
+ARG ZIG_VERSION=0.16.0
 ARG LIBAVIF_VERSION=1.3.0
-ARG LIBWEBP_VERSION=1.4.0
-ARG LIBJPEG_TURBO_VERSION=3.1.3
 ARG LIBSPNG_VERSION=0.7.4
 ARG LIBAOM_VERSION=v3.13.1
 ARG SVTAV1_VERSION=v3.1.2
@@ -13,7 +11,7 @@ ARG RAV1E_VERSION=0.8.1
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential curl cmake git wget ca-certificates xz-utils \
-    pkg-config zlib1g-dev nasm libheif-dev libpng-dev meson \
+    pkg-config zlib1g-dev nasm libpng-dev meson \
     libstdc++6 libgav1-dev libgcc-s1 gcc-14-base \
     && rm -rf /var/lib/apt/lists/*
 
@@ -30,24 +28,12 @@ ENV CFLAGS="-I/build/install/include"
 ENV LDFLAGS="-L/build/install/lib -L/usr/lib/x86_64-linux-gnu"
 RUN mkdir -p ${INSTALL_PREFIX}
 
-# libjpeg-turbo
-RUN wget -q https://github.com/libjpeg-turbo/libjpeg-turbo/releases/download/${LIBJPEG_TURBO_VERSION}/libjpeg-turbo-${LIBJPEG_TURBO_VERSION}.tar.gz \
- && tar -xzf libjpeg-turbo-${LIBJPEG_TURBO_VERSION}.tar.gz \
- && cmake -S libjpeg-turbo-${LIBJPEG_TURBO_VERSION} -B jt -DCMAKE_INSTALL_PREFIX=${INSTALL_PREFIX} -DCMAKE_BUILD_TYPE=Release -DENABLE_SHARED=OFF -DENABLE_STATIC=ON \
- && cmake --build jt -j$(nproc) && cmake --install jt
-
 # libspng
 RUN wget -q https://github.com/randy408/libspng/archive/refs/tags/v${LIBSPNG_VERSION}.tar.gz -O libspng.tgz \
  && tar -xzf libspng.tgz \
  && cmake -S libspng-${LIBSPNG_VERSION} -B spng -DCMAKE_INSTALL_PREFIX=${INSTALL_PREFIX} -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DSPNG_STATIC=ON \
  && cmake --build spng -j$(nproc) && cmake --install spng \
  && ln -s ${INSTALL_PREFIX}/lib/libspng_static.a ${INSTALL_PREFIX}/lib/libspng.a
-
-# libwebp
-RUN wget -q https://github.com/webmproject/libwebp/archive/refs/tags/v${LIBWEBP_VERSION}.tar.gz -O libwebp.tgz \
- && tar -xzf libwebp.tgz \
- && cmake -S libwebp-${LIBWEBP_VERSION} -B webp -DCMAKE_INSTALL_PREFIX=${INSTALL_PREFIX} -DBUILD_SHARED_LIBS=OFF \
- && cmake --build webp -j$(nproc) && cmake --install webp
 
 # dav1d
 RUN wget -q https://code.videolan.org/videolan/dav1d/-/archive/${DAV1D_VERSION}/dav1d-${DAV1D_VERSION}.tar.gz -O dav1d.tgz \

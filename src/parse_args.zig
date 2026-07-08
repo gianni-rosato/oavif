@@ -73,7 +73,7 @@ pub const AvifEncOptions = struct {
             return error.InvalidCodecOption;
     }
 
-    pub fn parseArgs(o: *AvifEncOptions, args: [][:0]u8, input_file: *?[]const u8, output_file: *?[]const u8) !void {
+    pub fn parseArgs(o: *AvifEncOptions, args: []const []const u8, input_file: *?[]const u8, output_file: *?[]const u8) !void {
         var arg_idx: usize = 1;
 
         while (arg_idx < args.len) {
@@ -122,7 +122,7 @@ pub const AvifEncOptions = struct {
     }
 };
 
-fn intCliArg(arg_idx: *usize, args: [][:0]u8, min: i64, max: i64, arg: [:0]const u8) !i64 {
+fn intCliArg(arg_idx: *usize, args: []const []const u8, min: i64, max: i64, arg: [:0]const u8) !i64 {
     if (arg_idx.* >= args.len or args[arg_idx.*][0] == '-') {
         print("Error: Missing {s} value\n", .{arg});
         return error.MissingOptionValue;
@@ -136,7 +136,7 @@ fn intCliArg(arg_idx: *usize, args: [][:0]u8, min: i64, max: i64, arg: [:0]const
     return tmp;
 }
 
-fn floatCliArg(arg_idx: *usize, args: [][:0]u8, min: f64, max: f64, arg: [:0]const u8) !f64 {
+fn floatCliArg(arg_idx: *usize, args: []const []const u8, min: f64, max: f64, arg: [:0]const u8) !f64 {
     if (arg_idx.* >= args.len or args[arg_idx.*][0] == '-') {
         print("Error: Missing {s} value\n", .{arg});
         return error.MissingOptionValue;
@@ -150,7 +150,7 @@ fn floatCliArg(arg_idx: *usize, args: [][:0]u8, min: f64, max: f64, arg: [:0]con
     return tmp;
 }
 
-fn boolCliArg(arg_idx: *usize, args: [][:0]u8, arg: [:0]const u8) !bool {
+fn boolCliArg(arg_idx: *usize, args: []const []const u8, arg: [:0]const u8) !bool {
     if (arg_idx.* >= args.len or args[arg_idx.*][0] == '-') {
         print("Error: Missing {s} value\n", .{arg});
         return error.MissingOptionValue;
@@ -164,7 +164,7 @@ fn boolCliArg(arg_idx: *usize, args: [][:0]u8, arg: [:0]const u8) !bool {
     return tmp == 1;
 }
 
-fn tuneCliArg(arg_idx: *usize, args: [][:0]u8, arg: [:0]const u8) !TuneMode {
+fn tuneCliArg(arg_idx: *usize, args: []const []const u8, arg: [:0]const u8) !TuneMode {
     if (arg_idx.* >= args.len or args[arg_idx.*][0] == '-') {
         print("Error: Missing {s} value\n", .{arg});
         return error.MissingOptionValue;
@@ -234,5 +234,5 @@ pub fn printUsage() void {
         d.transfer_characteristics,
         d.matrix_coefficients,
     });
-    print("\n\n\x1b[37mInput image formats: PNG, PAM, JPEG, WebP, HEIC, HEIF, or AVIF\x1b[0m\n", .{});
+    print("\n\n\x1b[37mInput image formats: PNG\x1b[0m\n", .{});
 }

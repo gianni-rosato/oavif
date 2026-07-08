@@ -1,50 +1,26 @@
 const std = @import("std");
+const imgio = @import("simpleimgio");
 
 const c = @cImport({
-    @cInclude("stdlib.h");
     @cInclude("spng.h");
-    @cInclude("jpeglib.h");
-    @cInclude("webp/decode.h");
-    @cInclude("webp/mux.h");
     @cInclude("avif/avif.h");
-    @cInclude("libheif/heif.h");
 });
 
 const EncCtx = @import("main.zig").EncCtx;
 const print = std.debug.print;
 
 pub fn printVersion(version: []const u8) void {
-    const jpeg_version = c.LIBJPEG_TURBO_VERSION_NUMBER;
-    const jpeg_major: comptime_int = jpeg_version / 1_000_000;
-    const jpeg_minor: comptime_int = (jpeg_version / 1_000) % 1_000;
-    const jpeg_patch: comptime_int = jpeg_version % 1_000;
-    const jpeg_simd: bool = c.WITH_SIMD != 0;
-
-    const webp_version = c.WebPGetDecoderVersion();
-    const webp_major = webp_version >> 16;
-    const webp_minor = (webp_version >> 8) & 0xFF;
-    const webp_patch = webp_version & 0xFF;
-
     const avif_major: comptime_int = c.AVIF_VERSION_MAJOR;
     const avif_minor: comptime_int = c.AVIF_VERSION_MINOR;
     const avif_patch: comptime_int = c.AVIF_VERSION_PATCH;
 
-    const heif_version = c.heif_get_version_number();
-    const heif_major = heif_version >> 24;
-    const heif_minor = (heif_version >> 16) & 0xFF;
-    const heif_patch = (heif_version >> 8) & 0xFF;
-
     print("oavif {s}\n", .{version});
-    print("libjpeg-turbo {d}.{d}.{d} ", .{ jpeg_major, jpeg_minor, jpeg_patch });
-    print("[simd: {}]\n", .{jpeg_simd});
-    print("libwebp {d}.{d}.{d}\n", .{ webp_major, webp_minor, webp_patch });
     print("libavif {d}.{d}.{d} (", .{ avif_major, avif_minor, avif_patch });
 
     var ver_buf: [256]u8 = undefined;
     c.avifCodecVersions(&ver_buf);
     const ver_str = std.mem.span(@as([*:0]u8, @ptrCast(&ver_buf)));
     print("{s})\n", .{ver_str});
-    print("libheif {d}.{d}.{d}\n", .{ heif_major, heif_minor, heif_patch });
 }
 
 // Image data structure
@@ -145,189 +121,75 @@ pub const Image = struct {
     }
 };
 
-fn hasExtension(path: []const u8, ext: []const u8) bool {
-    if (path.len < ext.len) return false;
-    const suffix = path[path.len - ext.len ..];
-    return std.ascii.eqlIgnoreCase(suffix, ext);
-}
+pub fn loadImage(io_ctx: std.Io, allocator: std.mem.Allocator, path: []const u8) !Image {
+    const buf = try std.Io.Dir.cwd().readFileAlloc(io_ctx, path, allocator, .unlimited);
+    defer allocator.free(buf);
 
-fn detectImageFormat(data: []const u8, path: []const u8) !enum { jpeg, png, pam, webp, avif, heif, unknown } {
-    if (data.len < 12) return error.InsufficientData;
+    if (isPng(buf))
+        return loadPNG(allocator, buf);
 
-    if (std.mem.eql(u8, data[0..3], "\xFF\xD8\xFF"))
-        return .jpeg;
-    if (std.mem.eql(u8, data[0..8], "\x89PNG\r\n\x1A\n"))
-        return .png;
-    if (std.mem.eql(u8, data[0..4], "RIFF") and std.mem.eql(u8, data[8..12], "WEBP"))
-        return .webp;
-    if (std.mem.eql(u8, data[0..2], "P7"))
-        return .pam;
-    if (std.mem.eql(u8, data[4..8], "ftyp")) {
-        if (std.mem.eql(u8, data[8..12], "avif"))
-            return .avif;
-        const brand = data[8..12];
-        if (std.mem.eql(u8, brand, "heic") or
-            std.mem.eql(u8, brand, "heix") or
-            std.mem.eql(u8, brand, "heif") or
-            std.mem.eql(u8, brand, "mif1") or
-            std.mem.eql(u8, brand, "msf1"))
-        {
-            return .heif;
-        }
+    if (isNetpbm(buf)) {
+        var netpbm = try imgio.decodePnmBytes(allocator, buf);
+        errdefer netpbm.deinit(allocator);
+        return fromSimpleImage(allocator, &netpbm);
     }
 
-    if (hasExtension(path, ".jpg") or hasExtension(path, ".jpeg"))
-        return .jpeg
-    else if (hasExtension(path, ".png"))
-        return .png
-    else if (hasExtension(path, ".pam"))
-        return .pam
-    else if (hasExtension(path, ".webp"))
-        return .webp
-    else if (hasExtension(path, ".avif"))
-        return .avif
-    else if (hasExtension(path, ".heif") or hasExtension(path, ".heic"))
-        return .heif;
-
-    return .unknown;
+    return error.UnsupportedImageFormat;
 }
 
-pub fn loadImage(allocator: std.mem.Allocator, path: []const u8) !Image {
-    const file = try std.fs.cwd().openFile(path, .{});
-    defer file.close();
-
-    var header: [12]u8 = undefined;
-    const bytes_read = try file.readAll(&header);
-    const format = try detectImageFormat(header[0..bytes_read], path);
-
-    try file.seekTo(0);
-
-    return switch (format) {
-        .jpeg => loadJPEG(allocator, path),
-        .png => loadPNG(allocator, path),
-        .pam => loadPAM(allocator, path),
-        .webp => loadWebP(allocator, path),
-        .avif => loadAVIF(allocator, path),
-        .heif => loadHEIF(allocator, path),
-        .unknown => error.UnsupportedImageFormat,
-    };
+fn isPng(buf: []const u8) bool {
+    return buf.len >= 8 and std.mem.eql(u8, buf[0..8], "\x89PNG\r\n\x1A\n");
 }
 
-pub fn loadJPEG(allocator: std.mem.Allocator, path: []const u8) !Image {
-    const file = try std.fs.cwd().openFile(path, .{});
+fn isNetpbm(buf: []const u8) bool {
+    return buf.len >= 2 and buf[0] == 'P' and buf[1] >= '1' and buf[1] <= '7';
+}
 
-    const file_ptr = c.fdopen(file.handle, "rb");
-    if (file_ptr == null) {
-        file.close();
-        return error.FailedToOpenFile;
-    }
-    defer _ = c.fclose(file_ptr);
+fn fromSimpleImage(allocator: std.mem.Allocator, simple: *imgio.Image) !Image {
+    if (simple.depth < 1 or simple.depth > 4)
+        return error.UnsupportedChannelCount;
 
-    var cinfo: c.jpeg_decompress_struct = undefined;
-    var jerr: c.jpeg_error_mgr = undefined;
+    if (simple.maxval <= 255) {
+        var eight = try simple.to8BitOwned(allocator);
+        errdefer eight.deinit(allocator);
 
-    cinfo.err = c.jpeg_std_error(&jerr);
-    c.jpeg_create_decompress(&cinfo);
-    defer c.jpeg_destroy_decompress(&cinfo);
-
-    c.jpeg_stdio_src(&cinfo, file_ptr);
-    c.jpeg_save_markers(&cinfo, c.JPEG_APP0 + 1, 0xFFFF); // APP1 for EXIF and XMP
-    c.jpeg_save_markers(&cinfo, c.JPEG_APP0 + 2, 0xFFFF); // APP2 for ICC
-
-    if (c.jpeg_read_header(&cinfo, c.TRUE) != c.JPEG_HEADER_OK)
-        return error.InvalidJPEGHeader;
-
-    var icc_profile: ?[]u8 = null;
-    var icc_data_ptr: [*c]u8 = null;
-    var icc_data_len: c_uint = 0;
-    if (c.jpeg_read_icc_profile(&cinfo, &icc_data_ptr, &icc_data_len) != 0)
-        if (icc_data_len > 0 and icc_data_ptr != null) {
-            icc_profile = try allocator.alloc(u8, icc_data_len);
-            @memcpy(icc_profile.?, icc_data_ptr[0..icc_data_len]);
-            c.free(icc_data_ptr);
+        const data = eight.data;
+        eight.data = &.{};
+        return .{
+            .width = eight.width,
+            .height = eight.height,
+            .channels = eight.depth,
+            .hbd = false,
+            .data = data,
         };
-
-    var exif_data: ?[]u8 = null;
-    var xmp_data: ?[]u8 = null;
-    var marker = cinfo.marker_list;
-    while (marker != null) : (marker = marker.*.next) {
-        if (marker.*.marker == c.JPEG_APP0 + 1) {
-            const marker_data = marker.*.data[0..marker.*.data_length];
-            // EXIF: starts with "Exif\0\0"
-            if (marker_data.len > 6 and std.mem.eql(u8, marker_data[0..6], "Exif\x00\x00")) {
-                exif_data = try allocator.alloc(u8, marker.*.data_length - 6);
-                @memcpy(exif_data.?, marker_data[6..]);
-            }
-            // XMP: starts with "http://ns.adobe.com/xap/1.0/\0"
-            else if (marker_data.len > 29 and std.mem.startsWith(u8, marker_data, "http://ns.adobe.com/xap/1.0/\x00")) {
-                xmp_data = try allocator.alloc(u8, marker.*.data_length - 29);
-                @memcpy(xmp_data.?, marker_data[29..]);
-            }
-        }
     }
 
-    if (cinfo.num_components == 1)
-        cinfo.out_color_space = c.JCS_GRAYSCALE
-    else
-        cinfo.out_color_space = c.JCS_RGB;
+    defer simple.deinit(allocator);
 
-    if (c.jpeg_start_decompress(&cinfo) != c.TRUE)
-        return error.JPEGDecompressFailed;
+    const samples = try simple.sampleCount();
+    if (simple.data.len != samples * 2)
+        return error.BadImageData;
 
-    const width: usize = @intCast(cinfo.output_width);
-    const height: usize = @intCast(cinfo.output_height);
-    const channels: usize = @intCast(cinfo.output_components);
+    const data = try allocator.alloc(u8, samples * 2);
+    errdefer allocator.free(data);
 
-    const row_stride: usize = width * channels;
-    const out_buf: []u8 = try allocator.alloc(u8, height * row_stride);
-    errdefer {
-        allocator.free(out_buf);
-        if (icc_profile) |icc| allocator.free(icc);
-        if (exif_data) |exif| allocator.free(exif);
-        if (xmp_data) |xmp| allocator.free(xmp);
-    }
-
-    const row_buf = try allocator.alloc(u8, row_stride);
-    defer allocator.free(row_buf);
-
-    for (0..height) |y| {
-        var row_pointers: [1][*c]u8 = .{row_buf.ptr};
-        if (c.jpeg_read_scanlines(&cinfo, &row_pointers, 1) != 1) {
-            if (icc_profile) |icc| allocator.free(icc);
-            if (exif_data) |exif| allocator.free(exif);
-            if (xmp_data) |xmp| allocator.free(xmp);
-            return error.JPEGReadScanlinesFailed;
-        }
-        @memcpy(out_buf[y * row_stride .. (y + 1) * row_stride], row_buf);
-    }
-
-    if (c.jpeg_finish_decompress(&cinfo) != c.TRUE) {
-        if (icc_profile) |icc| allocator.free(icc);
-        if (exif_data) |exif| allocator.free(exif);
-        if (xmp_data) |xmp| allocator.free(xmp);
-        return error.JPEGFinishDecompressFailed;
+    for (0..samples) |i| {
+        const src_idx = i * 2;
+        const sample = std.mem.readInt(u16, simple.data[src_idx..][0..2], .big);
+        const scaled: u16 = @intCast((@as(u64, @min(sample, simple.maxval)) * 65535 + simple.maxval / 2) / simple.maxval);
+        std.mem.writeInt(u16, data[src_idx..][0..2], scaled, .native);
     }
 
     return .{
-        .width = width,
-        .height = height,
-        .channels = @intCast(channels),
-        .hbd = false,
-        .data = out_buf,
-        .icc = icc_profile,
-        .exif = exif_data,
-        .xmp = xmp_data,
+        .width = simple.width,
+        .height = simple.height,
+        .channels = simple.depth,
+        .hbd = true,
+        .data = data,
     };
 }
 
-pub fn loadPNG(allocator: std.mem.Allocator, path: []const u8) !Image {
-    const file = try std.fs.cwd().openFile(path, .{});
-    defer file.close();
-    const size = try file.getEndPos();
-    const buf = try allocator.alloc(u8, size);
-    defer allocator.free(buf);
-    _ = try file.readAll(buf);
-
+pub fn loadPNG(allocator: std.mem.Allocator, buf: []const u8) !Image {
     const ctx = c.spng_ctx_new(0);
     if (ctx == null) return error.FailedCreateContext;
     defer c.spng_ctx_free(ctx);
@@ -549,333 +411,6 @@ pub fn loadPNG(allocator: std.mem.Allocator, path: []const u8) !Image {
     };
 }
 
-pub fn loadPAM(allocator: std.mem.Allocator, path: []const u8) !Image {
-    const file = try std.fs.cwd().openFile(path, .{});
-    defer file.close();
-
-    const file_size = try file.getEndPos();
-    const buf = try allocator.alloc(u8, file_size);
-    defer allocator.free(buf);
-    _ = try file.readAll(buf);
-
-    if (buf.len < 3 or !std.mem.startsWith(u8, buf, "P7")) return error.NotAPamFile;
-
-    // Find header end. Prefer explicit ENDHDR marker; else look for double newline.
-    const endhdr_explicit = std.mem.indexOf(u8, buf, "ENDHDR\n");
-    var header_end_index: ?usize = null;
-    if (endhdr_explicit) |i| {
-        header_end_index = i + 7; // include terminator
-    } else {
-        // Look for first occurrence of "\n\n" (empty line). PAM spec mandates ENDHDR
-        // but some generators may still use empty line.
-        const empty_line = std.mem.indexOf(u8, buf, "\n\n");
-        if (empty_line) |i| header_end_index = i + 2;
-    }
-    if (header_end_index == null) return error.HeaderNotFound;
-    const header_end = header_end_index.?;
-
-    const header = buf[0..header_end];
-
-    var width: usize = 0;
-    var height: usize = 0;
-    var depth: usize = 0;
-    var maxval: usize = 0;
-    var tuple_type: []const u8 = "UNSPECIFIED";
-
-    var line_it = std.mem.tokenizeAny(u8, header, "\r\n");
-    while (line_it.next()) |line| {
-        if (line.len == 0) continue;
-        if (line[0] == '#') continue; // comment
-        if (std.mem.startsWith(u8, line, "WIDTH")) {
-            var it = std.mem.tokenizeAny(u8, line[5..], " \t");
-            if (it.next()) |v| width = try std.fmt.parseInt(usize, v, 10);
-        } else if (std.mem.startsWith(u8, line, "HEIGHT")) {
-            var it = std.mem.tokenizeAny(u8, line[6..], " \t");
-            if (it.next()) |v| height = try std.fmt.parseInt(usize, v, 10);
-        } else if (std.mem.startsWith(u8, line, "DEPTH")) {
-            var it = std.mem.tokenizeAny(u8, line[5..], " \t");
-            if (it.next()) |v| depth = try std.fmt.parseInt(usize, v, 10);
-        } else if (std.mem.startsWith(u8, line, "MAXVAL")) {
-            var it = std.mem.tokenizeAny(u8, line[6..], " \t");
-            if (it.next()) |v| maxval = try std.fmt.parseInt(usize, v, 10);
-        } else if (std.mem.startsWith(u8, line, "TUPLTYPE")) {
-            var it = std.mem.tokenizeAny(u8, line[8..], " \t");
-            if (it.next()) |v| tuple_type = v;
-        } else if (std.mem.eql(u8, line, "ENDHDR")) {
-            break;
-        }
-    }
-
-    if (width == 0 or height == 0 or depth == 0 or maxval == 0)
-        return error.InvalidPamDimensions;
-    if (maxval != 255) return error.UnsupportedPamMaxVal;
-    if (depth != 1 and depth != 2 and depth != 3 and depth != 4)
-        return error.UnsupportedPamDepth;
-
-    var channels: u8 = @intCast(depth);
-    if (std.ascii.eqlIgnoreCase(tuple_type, "GRAYSCALE")) {
-        if (depth != 1) return error.PamTupleMismatch;
-        channels = 1;
-    } else if (std.ascii.eqlIgnoreCase(tuple_type, "GRAYSCALE_ALPHA")) {
-        if (depth != 2) return error.PamTupleMismatch;
-        channels = 2;
-    } else if (std.ascii.eqlIgnoreCase(tuple_type, "RGB")) {
-        if (depth != 3) return error.PamTupleMismatch;
-        channels = 3;
-    } else if (std.ascii.eqlIgnoreCase(tuple_type, "RGB_ALPHA")) {
-        if (depth != 4) return error.PamTupleMismatch;
-        channels = 4;
-    } else if (std.ascii.eqlIgnoreCase(tuple_type, "BLACKANDWHITE")) {
-        // binary (maxval should be 1) - not supporting
-        return error.UnsupportedPamTuple;
-    }
-
-    const pixel_count = width * height;
-    const data_size = pixel_count * channels;
-    if (header_end + data_size > buf.len) return error.InsufficientDataInFile;
-
-    const out = try allocator.alloc(u8, pixel_count * channels);
-    errdefer allocator.free(out);
-    @memcpy(out, buf[header_end .. header_end + data_size]);
-
-    return .{
-        .width = width,
-        .height = height,
-        .channels = channels,
-        .hbd = false,
-        .data = out,
-        .icc = null,
-        .exif = null, // pam does not support metadata
-        .xmp = null,
-    };
-}
-
-pub fn loadWebP(allocator: std.mem.Allocator, path: []const u8) !Image {
-    const file = try std.fs.cwd().openFile(path, .{});
-    defer file.close();
-    const size = try file.getEndPos();
-    const buf = try allocator.alloc(u8, size);
-    defer allocator.free(buf);
-    _ = try file.readAll(buf);
-
-    var webp_data = c.WebPData{
-        .bytes = buf.ptr,
-        .size = buf.len,
-    };
-
-    var icc_profile: ?[]u8 = null;
-    var exif_data: ?[]u8 = null;
-    var xmp_data: ?[]u8 = null;
-
-    const mux = c.WebPMuxCreate(&webp_data, 0);
-    if (mux != null) {
-        defer c.WebPMuxDelete(mux);
-
-        var icc_chunk: c.WebPData = undefined;
-        if (c.WebPMuxGetChunk(mux, "ICCP", &icc_chunk) == c.WEBP_MUX_OK) {
-            if (icc_chunk.size > 0 and icc_chunk.bytes != null) {
-                icc_profile = try allocator.alloc(u8, icc_chunk.size);
-                @memcpy(icc_profile.?, icc_chunk.bytes[0..icc_chunk.size]);
-            }
-        }
-
-        var exif_chunk: c.WebPData = undefined;
-        if (c.WebPMuxGetChunk(mux, "EXIF", &exif_chunk) == c.WEBP_MUX_OK) {
-            if (exif_chunk.size > 0 and exif_chunk.bytes != null) {
-                exif_data = try allocator.alloc(u8, exif_chunk.size);
-                @memcpy(exif_data.?, exif_chunk.bytes[0..exif_chunk.size]);
-            }
-        }
-
-        var xmp_chunk: c.WebPData = undefined;
-        if (c.WebPMuxGetChunk(mux, "XMP ", &xmp_chunk) == c.WEBP_MUX_OK) {
-            if (xmp_chunk.size > 0 and xmp_chunk.bytes != null) {
-                xmp_data = try allocator.alloc(u8, xmp_chunk.size);
-                @memcpy(xmp_data.?, xmp_chunk.bytes[0..xmp_chunk.size]);
-            }
-        }
-    }
-
-    var features: c.WebPBitstreamFeatures = undefined;
-    if (c.WebPGetFeatures(buf.ptr, buf.len, &features) != c.VP8_STATUS_OK)
-        return error.WebPGetFeaturesFailed;
-
-    const has_alpha = features.has_alpha != 0;
-    const channels: u8 = if (has_alpha) 4 else 3;
-
-    var width: c_int = 0;
-    var height: c_int = 0;
-    const data = if (has_alpha)
-        c.WebPDecodeRGBA(buf.ptr, buf.len, &width, &height)
-    else
-        c.WebPDecodeRGB(buf.ptr, buf.len, &width, &height);
-    if (data == null) return error.WebPDecodeFailed;
-    defer c.WebPFree(data);
-
-    const out_size = @as(usize, @intCast(width)) * @as(usize, @intCast(height)) * channels;
-    const out_buf = try allocator.alloc(u8, out_size);
-    errdefer {
-        allocator.free(out_buf);
-        if (icc_profile) |icc| allocator.free(icc);
-        if (exif_data) |exif| allocator.free(exif);
-        if (xmp_data) |xmp| allocator.free(xmp);
-    }
-    @memcpy(out_buf, @as([*]const u8, @ptrCast(data))[0..out_size]);
-
-    return .{
-        .width = @intCast(width),
-        .height = @intCast(height),
-        .channels = channels,
-        .hbd = false,
-        .data = out_buf,
-        .icc = icc_profile,
-        .exif = exif_data,
-        .xmp = xmp_data,
-    };
-}
-
-pub fn loadHEIF(allocator: std.mem.Allocator, path: []const u8) !Image {
-    const file = try std.fs.cwd().openFile(path, .{});
-    defer file.close();
-
-    const size = try file.getEndPos();
-    const buf = try allocator.alloc(u8, size);
-    defer allocator.free(buf);
-    _ = try file.readAll(buf);
-
-    const ctx = c.heif_context_alloc();
-    if (ctx == null) return error.FailedCreateContext;
-    defer c.heif_context_free(ctx);
-
-    const err_read = c.heif_context_read_from_memory_without_copy(ctx, buf.ptr, buf.len, null);
-    if (err_read.code != 0) return error.HeifReadFailed;
-
-    var handle: ?*c.heif_image_handle = null;
-    const err_handle = c.heif_context_get_primary_image_handle(ctx, &handle);
-    if (err_handle.code != 0) return error.GetHandleFailed;
-    defer c.heif_image_handle_release(handle);
-
-    const width: usize = @intCast(c.heif_image_handle_get_width(handle));
-    const height: usize = @intCast(c.heif_image_handle_get_height(handle));
-    const has_alpha = c.heif_image_handle_has_alpha_channel(handle) != 0;
-
-    const bit_depth: c_int = c.heif_image_handle_get_luma_bits_per_pixel(handle);
-    const is_16bit = bit_depth > 8;
-
-    var img: ?*c.heif_image = null;
-    const chroma: c_uint = @intCast(if (is_16bit)
-        (if (has_alpha) c.heif_chroma_interleaved_RRGGBBAA_BE else c.heif_chroma_interleaved_RRGGBB_BE)
-    else
-        (if (has_alpha) c.heif_chroma_interleaved_RGBA else c.heif_chroma_interleaved_RGB));
-
-    const err_decode = c.heif_decode_image(handle, &img, c.heif_colorspace_RGB, chroma, null);
-    if (err_decode.code != 0) return error.DecodeFailed;
-
-    defer c.heif_image_release(img);
-
-    const channels: u8 = if (has_alpha) 4 else 3;
-
-    var icc_profile: ?[]u8 = null;
-    const profile_type = c.heif_image_handle_get_color_profile_type(handle);
-    if (profile_type == c.heif_color_profile_type_prof or profile_type == c.heif_color_profile_type_rICC) {
-        const icc_size = c.heif_image_handle_get_raw_color_profile_size(handle);
-        if (icc_size > 0) {
-            icc_profile = try allocator.alloc(u8, icc_size);
-            errdefer allocator.free(icc_profile.?);
-            const err_icc = c.heif_image_handle_get_raw_color_profile(handle, icc_profile.?.ptr);
-            if (err_icc.code != 0) {
-                allocator.free(icc_profile.?);
-                icc_profile = null;
-            }
-        }
-    }
-
-    var exif_data: ?[]u8 = null;
-    var xmp_data: ?[]u8 = null;
-    const num_metadata = c.heif_image_handle_get_number_of_metadata_blocks(handle, null);
-    if (num_metadata > 0) {
-        const meta_ids = try allocator.alloc(c.heif_item_id, @intCast(num_metadata));
-        defer allocator.free(meta_ids);
-        _ = c.heif_image_handle_get_list_of_metadata_block_IDs(handle, null, meta_ids.ptr, @intCast(num_metadata));
-
-        for (meta_ids) |meta_id| {
-            const meta_type_ptr = c.heif_image_handle_get_metadata_type(handle, meta_id);
-            if (meta_type_ptr != null) {
-                const meta_type = std.mem.span(meta_type_ptr);
-                if (std.mem.eql(u8, meta_type, "Exif")) {
-                    const exif_size = c.heif_image_handle_get_metadata_size(handle, meta_id);
-                    if (exif_size > 0) {
-                        exif_data = try allocator.alloc(u8, exif_size);
-                        const err_exif = c.heif_image_handle_get_metadata(handle, meta_id, exif_data.?.ptr);
-                        if (err_exif.code != 0) {
-                            allocator.free(exif_data.?);
-                            exif_data = null;
-                        }
-                    }
-                } else if (std.mem.eql(u8, meta_type, "XMP")) {
-                    const xmp_size = c.heif_image_handle_get_metadata_size(handle, meta_id);
-                    if (xmp_size > 0) {
-                        xmp_data = try allocator.alloc(u8, xmp_size);
-                        const err_xmp = c.heif_image_handle_get_metadata(handle, meta_id, xmp_data.?.ptr);
-                        if (err_xmp.code != 0) {
-                            allocator.free(xmp_data.?);
-                            xmp_data = null;
-                        }
-                    }
-                } else if (std.mem.eql(u8, meta_type, "mime")) {
-                    const content_type_ptr = c.heif_image_handle_get_metadata_content_type(handle, meta_id);
-                    if (content_type_ptr != null) {
-                        const content_type = std.mem.span(content_type_ptr);
-                        if (std.mem.eql(u8, content_type, "application/rdf+xml")) {
-                            const xmp_size = c.heif_image_handle_get_metadata_size(handle, meta_id);
-                            if (xmp_size > 0) {
-                                xmp_data = try allocator.alloc(u8, xmp_size);
-                                const err_xmp = c.heif_image_handle_get_metadata(handle, meta_id, xmp_data.?.ptr);
-                                if (err_xmp.code != 0) {
-                                    allocator.free(xmp_data.?);
-                                    xmp_data = null;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    var stride: c_int = 0;
-    const plane_data = c.heif_image_get_plane_readonly(img, c.heif_channel_interleaved, &stride);
-
-    const pixel_size: usize = if (is_16bit) 2 else 1;
-    const row_size = width * channels * pixel_size;
-    const out_size = height * row_size;
-
-    const out_buf = try allocator.alloc(u8, out_size);
-    errdefer {
-        allocator.free(out_buf);
-        if (icc_profile) |icc| allocator.free(icc);
-        if (exif_data) |exif| allocator.free(exif);
-        if (xmp_data) |xmp| allocator.free(xmp);
-    }
-
-    for (0..height) |y| {
-        const src_offset = y * @as(usize, @intCast(stride));
-        const dst_offset = y * row_size;
-        @memcpy(out_buf[dst_offset..][0..row_size], plane_data[src_offset..][0..row_size]);
-    }
-
-    return .{
-        .width = width,
-        .height = height,
-        .channels = channels,
-        .hbd = is_16bit,
-        .data = out_buf,
-        .icc = icc_profile,
-        .exif = exif_data,
-        .xmp = xmp_data,
-    };
-}
-
 const AvifDecodeResult = struct {
     decoder: *c.avifDecoder,
     rgb: c.avifRGBImage,
@@ -911,80 +446,6 @@ fn decodeAvifCommon(avif_data: []const u8, use_8bit: bool) !AvifDecodeResult {
         return error.ConvertToRGBFailed;
 
     return .{ .decoder = decoder.?, .rgb = rgb };
-}
-
-fn copyRgbPixels(allocator: std.mem.Allocator, rgb: c.avifRGBImage, width: usize, height: usize) ![]u8 {
-    const channels: usize = if (rgb.format == c.AVIF_RGB_FORMAT_RGBA) 4 else 3;
-    const bytes_per_sample: usize = if (rgb.depth > 8) 2 else 1;
-    const out_buf = try allocator.alloc(u8, width * height * channels * bytes_per_sample);
-    errdefer allocator.free(out_buf);
-
-    for (0..height) |y| {
-        const src_row = rgb.pixels + y * rgb.rowBytes;
-        const dst_row = out_buf[y * width * channels * bytes_per_sample ..];
-        @memcpy(dst_row[0 .. width * channels * bytes_per_sample], src_row[0 .. width * channels * bytes_per_sample]);
-    }
-
-    return out_buf;
-}
-
-pub fn loadAVIF(allocator: std.mem.Allocator, path: []const u8) !Image {
-    const file = try std.fs.cwd().openFile(path, .{});
-    defer file.close();
-    const size = try file.getEndPos();
-    const buf = try allocator.alloc(u8, size);
-    defer allocator.free(buf);
-    _ = try file.readAll(buf);
-
-    var result = try decodeAvifCommon(buf, false);
-    defer c.avifRGBImageFreePixels(@ptrCast(&result.rgb));
-    defer c.avifDecoderDestroy(result.decoder);
-
-    const img_ptr = result.decoder.*.image;
-    const width: usize = @intCast(img_ptr.*.width);
-    const height: usize = @intCast(img_ptr.*.height);
-    const channels: u8 = if (result.rgb.format == c.AVIF_RGB_FORMAT_RGBA) 4 else 3;
-
-    var icc_profile: ?[]u8 = null;
-    if (img_ptr.*.icc.size > 0 and img_ptr.*.icc.data != null) {
-        icc_profile = try allocator.alloc(u8, img_ptr.*.icc.size);
-        @memcpy(icc_profile.?, img_ptr.*.icc.data[0..img_ptr.*.icc.size]);
-    }
-
-    var exif_data: ?[]u8 = null;
-    if (img_ptr.*.exif.size > 0 and img_ptr.*.exif.data != null) {
-        exif_data = try allocator.alloc(u8, img_ptr.*.exif.size);
-        @memcpy(exif_data.?, img_ptr.*.exif.data[0..img_ptr.*.exif.size]);
-    }
-
-    var xmp_data: ?[]u8 = null;
-    if (img_ptr.*.xmp.size > 0 and img_ptr.*.xmp.data != null) {
-        xmp_data = try allocator.alloc(u8, img_ptr.*.xmp.size);
-        @memcpy(xmp_data.?, img_ptr.*.xmp.data[0..img_ptr.*.xmp.size]);
-    }
-
-    const out_buf = try copyRgbPixels(allocator, result.rgb, width, height);
-    errdefer allocator.free(out_buf);
-
-    const hbd: bool = result.rgb.depth > 8;
-    if (hbd) {
-        const pixels = width * height * channels;
-        const src_u16 = @as([*]u16, @ptrCast(@alignCast(out_buf.ptr)))[0..pixels];
-        const shift: u4 = @intCast(16 - result.rgb.depth);
-        for (src_u16) |*pixel|
-            pixel.* = pixel.* << shift;
-    }
-
-    return .{
-        .width = width,
-        .height = height,
-        .channels = channels,
-        .hbd = hbd,
-        .data = out_buf,
-        .icc = icc_profile,
-        .exif = exif_data,
-        .xmp = xmp_data,
-    };
 }
 
 pub fn encodeAvifToBuffer(e: *EncCtx, allocator: std.mem.Allocator, output: *std.ArrayListAligned(u8, null)) !void {
@@ -1186,13 +647,16 @@ pub fn decodeAvifToRgb(allocator: std.mem.Allocator, avif_data: []const u8) ![]u
     return rgb_out;
 }
 
-pub fn encodeAvifToFile(e: *EncCtx, allocator: std.mem.Allocator, output_path: []const u8) !void {
+pub fn encodeAvifToFile(e: *EncCtx, io_ctx: std.Io, allocator: std.mem.Allocator, output_path: []const u8) !void {
     var avif_data = try std.ArrayListAligned(u8, null).initCapacity(allocator, 0);
     defer avif_data.deinit(allocator);
     try encodeAvifToBuffer(e, allocator, &avif_data);
 
-    const file = try std.fs.cwd().createFile(output_path, .{});
-    defer file.close();
-    try file.writeAll(avif_data.items);
+    const file = try std.Io.Dir.cwd().createFile(io_ctx, output_path, .{});
+    defer file.close(io_ctx);
+    var write_buffer: [8192]u8 = undefined;
+    var writer = file.writerStreaming(io_ctx, &write_buffer);
+    try writer.interface.writeAll(avif_data.items);
+    try writer.interface.flush();
     e.buf.size = avif_data.items.len;
 }

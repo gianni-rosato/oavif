@@ -39,7 +39,7 @@ options:
  -q, --quality u8
     quantizer (0..100), bypasses search
 
-Input image formats: PNG, PAM, HEIC, HEIF, JPEG, WebP, or AVIF
+Input image formats: PNG
 ```
 
 A script is included in the `scripts/` directory to test oavif's performance on a directory of images.
@@ -66,12 +66,9 @@ options:
 ### Native (Zig)
 
 Compilation requires:
-- Zig 0.15.1
+- Zig 0.16.0
 - libavif
-- libwebp
-- libjpeg-turbo
 - libspng
-- libheif
 
 ```sh
 git clone https://github.com/gianni-rosato/oavif
@@ -95,7 +92,7 @@ Workflow:
 
   - Pull zlib and nasm from ubuntu repository
   - installs Zig and build tools
-  - builds libjpeg-turbo, libwebp, libspng, and libavif (with local libaom) as static libraries into an isolated prefix
+  - builds libspng and libavif (with local libaom) as static libraries into an isolated prefix
   - builds `oavif` with `zig build`, linking against that prefix
 - final stage (distroless):
 
