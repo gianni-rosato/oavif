@@ -15,11 +15,11 @@ fn getVersionString(b: *std.Build) ![]const u8 {
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const strip = b.option(bool, "strip", "strip symbols from the binary, defaults to false") orelse false;
+    const flto = b.option(bool, "flto", "enable Link Time Optimization, defaults to false") orelse false;
     const options = b.addOptions();
     const version = getVersionString(b) catch "unknown";
     options.addOption([]const u8, "version", version);
-    const strip: bool =
-        if (optimize == std.builtin.OptimizeMode.ReleaseFast) true else false;
 
     // fssimu2
     const fssimu2 = b.dependency("fssimu2", .{
@@ -56,6 +56,7 @@ pub fn build(b: *std.Build) void {
     bin.root_module.addIncludePath(b.path("src"));
     bin.root_module.addIncludePath(b.path("src/include"));
     bin.root_module.addIncludePath(b.path("third-party/"));
+    bin.lto = if (flto) .full else null;
 
     // local import
     bin.root_module.addImport("fssimu2", fssimu2.module("fssimu2"));
