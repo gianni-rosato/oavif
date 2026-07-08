@@ -234,5 +234,5 @@ pub fn printUsage() void {
         d.transfer_characteristics,
         d.matrix_coefficients,
     });
-    print("\n\n\x1b[37mInput image formats: PNG\x1b[0m\n", .{});
+    print("\n\n\x1b[37msRGB PNG, PNM/PAM, or QOI input expected\x1b[0m\n", .{});
 }

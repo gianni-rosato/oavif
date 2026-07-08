@@ -134,6 +134,12 @@ pub fn loadImage(io_ctx: std.Io, allocator: std.mem.Allocator, path: []const u8)
         return fromSimpleImage(allocator, &netpbm);
     }
 
+    if (isQoi(buf)) {
+        var qoi = try imgio.decodeQoiBytes(allocator, buf);
+        errdefer qoi.deinit(allocator);
+        return fromSimpleImage(allocator, &qoi);
+    }
+
     return error.UnsupportedImageFormat;
 }
 
@@ -143,6 +149,10 @@ fn isPng(buf: []const u8) bool {
 
 fn isNetpbm(buf: []const u8) bool {
     return buf.len >= 2 and buf[0] == 'P' and buf[1] >= '1' and buf[1] <= '7';
+}
+
+fn isQoi(buf: []const u8) bool {
+    return buf.len >= 4 and std.mem.eql(u8, buf[0..4], "qoif");
 }
 
 fn fromSimpleImage(allocator: std.mem.Allocator, simple: *imgio.Image) !Image {
