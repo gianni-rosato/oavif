@@ -8,14 +8,14 @@
 
 import argparse
 import csv
-import os
 import re
+import statistics
 import subprocess
 import sys
 import time
 from pathlib import Path
-import statistics
-from typing import Optional, Tuple, List, Dict, Any
+from typing import Any, Dict, List, Optional
+
 from rich import print
 
 
@@ -92,7 +92,9 @@ def process_image(
             "stderr": stderr_output.strip(),
         }
     except subprocess.CalledProcessError as e:
-        _ = (time.perf_counter() - start_time) * 1000.0  # still measure elapsed, but we report None
+        _ = (
+            time.perf_counter() - start_time
+        ) * 1000.0  # still measure elapsed, but we report None
         return {
             "image": image_name,
             "encoding_time_ms": None,
@@ -114,7 +116,9 @@ def main() -> None:
     parser.add_argument("images_dir", help="Directory containing input images")
     parser.add_argument("oavif_path", help="Path to oavif binary")
     parser.add_argument("output_csv", help="Output CSV file path")
-    parser.add_argument("--tolerance", type=float, help="Tolerance value for oavif encoding")
+    parser.add_argument(
+        "--tolerance", type=float, help="Tolerance value for oavif encoding"
+    )
     parser.add_argument(
         "--keep",
         action="store_true",
@@ -136,7 +140,9 @@ def main() -> None:
 
     image_extensions: set[str] = {".png"}
     image_files: list[Path] = sorted(
-        f for f in images_dir.iterdir() if f.is_file() and f.suffix.lower() in image_extensions
+        f
+        for f in images_dir.iterdir()
+        if f.is_file() and f.suffix.lower() in image_extensions
     )
 
     if not image_files:
@@ -150,7 +156,9 @@ def main() -> None:
 
     for image_file in image_files:
         print(f"Processing {image_file.name}...")
-        metrics = process_image(args.oavif_path, image_file, temp_output_dir, args.tolerance)
+        metrics = process_image(
+            args.oavif_path, image_file, temp_output_dir, args.tolerance
+        )
         if metrics["status"] == "error":
             print(f"[red]{metrics['error']}[/red]")
         elif metrics["status"] == "no-output":
@@ -198,7 +206,9 @@ def main() -> None:
                     m["final_bytes"] if m["final_bytes"] is not None else "",
                     m["savings_bytes"] if m["savings_bytes"] is not None else "",
                     f"{m['savings_pct']:.2f}" if m["savings_pct"] is not None else "",
-                    f"{m['encoding_time_ms']:.2f}" if m["encoding_time_ms"] is not None else "",
+                    f"{m['encoding_time_ms']:.2f}"
+                    if m["encoding_time_ms"] is not None
+                    else "",
                     m["passes"] if m["passes"] is not None else "",
                     m["status"],
                     m["error"] or "",
@@ -216,7 +226,9 @@ def main() -> None:
         except ValueError:
             return None
 
-    encoding_times = [m["encoding_time_ms"] for m in ok if m["encoding_time_ms"] is not None]
+    encoding_times = [
+        m["encoding_time_ms"] for m in ok if m["encoding_time_ms"] is not None
+    ]
     passes_list = [m["passes"] for m in ok if m["passes"] is not None]
     orig_total = sum(m["orig_bytes"] for m in ok)
     final_total = sum(m["final_bytes"] for m in ok if m["final_bytes"] is not None)
@@ -229,7 +241,9 @@ def main() -> None:
         if m["final_bytes"] is not None and m["orig_bytes"] > 0
     ]
     geomean_ratio = safe_geomean(ratios)
-    geomean_savings_pct = (1.0 - geomean_ratio) * 100.0 if geomean_ratio is not None else None
+    geomean_savings_pct = (
+        (1.0 - geomean_ratio) * 100.0 if geomean_ratio is not None else None
+    )
 
     # Throughput metrics
     img_throughput = (len(ok) / wall_elapsed_s) if wall_elapsed_s > 0 else 0.0
@@ -237,9 +251,13 @@ def main() -> None:
     byte_out_throughput = (final_total / wall_elapsed_s) if wall_elapsed_s > 0 else 0.0
 
     # Dispersion
-    avg_encoding_time = (sum(encoding_times) / len(encoding_times)) if encoding_times else 0.0
+    avg_encoding_time = (
+        (sum(encoding_times) / len(encoding_times)) if encoding_times else 0.0
+    )
     median_encoding_time = statistics.median(encoding_times) if encoding_times else 0.0
-    encoding_time_stddev = statistics.stdev(encoding_times) if len(encoding_times) > 1 else 0.0
+    encoding_time_stddev = (
+        statistics.stdev(encoding_times) if len(encoding_times) > 1 else 0.0
+    )
 
     avg_passes = (sum(passes_list) / len(passes_list)) if passes_list else 0.0
     max_passes = max(passes_list) if passes_list else 0
@@ -248,7 +266,9 @@ def main() -> None:
 
     # Summary printout
     print("\n[bold]Run Summary[/bold]")
-    print(f"Images: [green]{len(ok)} ok[/green], [yellow]{len(no_out)} no-output[/yellow], [red]{len(errors)} errors[/red]")
+    print(
+        f"Images: [green]{len(ok)} ok[/green], [yellow]{len(no_out)} no-output[/yellow], [red]{len(errors)} errors[/red]"
+    )
     print(f"Total wall time: {wall_elapsed_s:.2f} s")
     print(f"Throughput: {img_throughput:.2f} images/s")
     print(f"Input bytes throughput: {human_bytes(int(byte_in_throughput))}/s")
@@ -264,9 +284,13 @@ def main() -> None:
 
     if encoding_times:
         print("\n[bold]Timing & Passes[/bold]")
-        print(f"Average encoding time: {avg_encoding_time:.2f} ms ± {encoding_time_stddev:.2f}")
+        print(
+            f"Average encoding time: {avg_encoding_time:.2f} ms ± {encoding_time_stddev:.2f}"
+        )
         print(f"Median encoding time:  {median_encoding_time:.2f} ms")
-        print(f"Average passes:        {avg_passes:.2f} ± {passes_stddev:.2f} (max: {max_passes}, min: {min_passes})")
+        print(
+            f"Average passes:        {avg_passes:.2f} ± {passes_stddev:.2f} (max: {max_passes}, min: {min_passes})"
+        )
 
     print(f"\nResults written to [bold]{args.output_csv}[/bold]")
 
