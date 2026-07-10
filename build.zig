@@ -21,8 +21,8 @@ pub fn build(b: *std.Build) void {
     const version = getVersionString(b) catch "unknown";
     options.addOption([]const u8, "version", version);
 
-    // fssimu2
-    const fssimu2 = b.dependency("fssimu2", .{
+    // fmetrics
+    const fmetrics = b.dependency("fmetrics", .{
         .target = target,
         .optimize = optimize,
     });
@@ -59,10 +59,11 @@ pub fn build(b: *std.Build) void {
     bin.lto = if (flto) .full else null;
 
     // local import
-    bin.root_module.addImport("fssimu2", fssimu2.module("fssimu2"));
+    bin.root_module.addImport("fmetrics", fmetrics.module("fmetrics"));
     bin.root_module.addImport("simpleimgio", simpleimgio.module("simpleimgio"));
 
     bin.root_module.linkLibrary(spng.artifact("spng"));
+    bin.root_module.linkLibrary(fmetrics.artifact("libfmetrics"));
     bin.root_module.linkSystemLibrary("avif", .{ .preferred_link_mode = .static });
     bin.root_module.linkSystemLibrary("aom", .{ .preferred_link_mode = .static });
 

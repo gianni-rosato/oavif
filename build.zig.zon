@@ -4,9 +4,9 @@
     .fingerprint = 0x1e4887866f621223, // Changing this has security and trust implications.
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
-        .fssimu2 = .{
-            .url = "git+https://github.com/gianni-rosato/fssimu2.git#9883fc89c5bd2c647abe788fa29e44247d9f69d3",
-            .hash = "fssimu2-0.2.0-83U3DV2TAQAuizABQx6uqJK9e2huWGxUWXfKJSRaKAiS",
+        .fmetrics = .{
+            .url = "git+https://github.com/halidecx/fmetrics.git#f50135a23ff6246b2433d10784f4fd0f6d8b5ca7",
+            .hash = "fmetrics-0.0.2-Fi6IzCqlAwD-b2K4meSiY70OpMVl4WTlUI8jI-qwYlGa",
         },
         .simpleimgio = .{
             .url = "git+https://github.com/gianni-rosato/simpleimgio.git#988a6b730eb4ad99ee4205ef40c035ded6a2099d",

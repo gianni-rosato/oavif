@@ -636,7 +636,7 @@ pub fn decodeAvifToRgb(allocator: std.mem.Allocator, avif_data: []const u8) ![]u
     const width: usize = @intCast(img.*.width);
     const height: usize = @intCast(img.*.height);
 
-    // return 8-bit RGB (no alpha) for fssimu2
+    // return 8-bit RGB (no alpha) for fmetrics
     const pixels = width * height;
     const rgb_out = try allocator.alloc(u8, pixels * 3);
     errdefer allocator.free(rgb_out);

@@ -1,6 +1,6 @@
 const std = @import("std");
 
-const fssimu2 = @import("fssimu2");
+const fmetrics = @import("fmetrics");
 const io = @import("io.zig");
 
 const print = std.debug.print;
@@ -34,7 +34,9 @@ fn computeScoreAtQuality(e: *EncCtx, allocator: std.mem.Allocator) !f64 {
     e.buf.q = e.q;
     e.buf.size = avif_data.items.len;
 
-    return try fssimu2.computeSsimu2(allocator, e.rgb, decoded_rgb, e.w, e.h, 3, null);
+    const ref = try fmetrics.Image.init(e.rgb, e.w, e.h);
+    const dst = try fmetrics.Image.init(decoded_rgb, e.w, e.h);
+    return try fmetrics.ssimu2(ref, dst);
 }
 
 inline fn predictQFromScore(tgt: f64) u32 {

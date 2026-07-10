@@ -1,6 +1,6 @@
 # oavif
 
-`oavif` is a tool for target quality AVIF encoding using [fssimu2](https://github.com/gianni-rosato/fssimu2), a fast perceptual image quality metric.
+`oavif` is a tool for target quality AVIF encoding using [fmetrics](https://github.com/halidecx/fmetrics), a fast perceptual image quality metric.
 
 ## Usage
 
