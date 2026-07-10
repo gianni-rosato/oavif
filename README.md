@@ -68,7 +68,6 @@ options:
 Compilation requires:
 - Zig 0.16.0
 - libavif
-- libspng
 
 ```sh
 git clone https://github.com/gianni-rosato/oavif
